@@ -37,6 +37,10 @@ test "parse float exponent" := do
   let exprs ← parseMain "1e3"
   exprs ≡ [Expr.lit (.float 1000.0)]
 
+test "parse scaled decimal" := do
+  let exprs ← parseMain "1.23s2"
+  exprs ≡ [Expr.lit (.scaled 123 2)]
+
 test "parse string literal" := do
   let exprs ← parseMain "'hello''world'"
   exprs ≡ [Expr.lit (.str "hello'world")]
@@ -60,6 +64,11 @@ test "parse binary symbol literal" := do
 test "parse literal array" := do
   let exprs ← parseMain "#(1 'a' #foo $b)"
   exprs ≡ [Expr.lit (.array [.int 1, .str "a", .symbol "foo", .char 'b'])]
+
+test "parse literal dictionary" := do
+  let exprs ← parseMain "#{ #a -> 1 . #b -> 2 }"
+  exprs ≡
+    [Expr.lit (.dict [(.symbol "a", .int 1), (.symbol "b", .int 2)])]
 
 test "parse byte array" := do
   let exprs ← parseMain "#[1 2 255]"
@@ -109,6 +118,10 @@ test "parse cascade with chained first message" := do
   exprs ≡
     [Expr.cascade (Expr.var "obj")
       [[("foo", []), ("bar", [])], [("baz", [])]]]
+
+test "parse dynamic array" := do
+  let exprs ← parseMain "{ 1. 2 }"
+  exprs ≡ [Expr.array [Expr.lit (.int 1), Expr.lit (.int 2)]]
 
 test "parse chained unary sends" := do
   let exprs ← parseMain "foo bar baz"

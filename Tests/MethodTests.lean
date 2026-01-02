@@ -48,6 +48,22 @@ test "parse keyword method with temps" := do
       shouldSatisfy (m == expected) "keyword method should parse"
   | .error e => throw (IO.userError s!"parse error: {e.message}")
 
+test "parse method pragmas" := do
+  let src := "foo <primitive: 1> <tag: #bar> ^ 1"
+  match Smalltalk.parseMethod src with
+  | .ok m =>
+      let expected : Method :=
+        { selector := "foo"
+          params := []
+          temps := []
+          pragmas := [
+            { selector := "primitive:", args := [.int 1] },
+            { selector := "tag:", args := [.symbol "bar"] }
+          ]
+          body := [Expr.return (Expr.lit (.int 1))] }
+      shouldSatisfy (m == expected) "pragmas should parse"
+  | .error e => throw (IO.userError s!"parse error: {e.message}")
+
 #generate_tests
 
 end MethodTests

@@ -201,6 +201,23 @@ where
     let result := mantissaVal * multiplier
     if negative then -result else result
 
+/-- Parse a scaled decimal literal (e.g., 1s2, 1.23s2). -/
+def scaledLit : Parser Literal := attempt do
+  ws
+  let neg ← optional (pchar '-')
+  let intPart ← many1Chars digit
+  let fracPart ← opt (attempt do
+    let _ ← pchar '.'
+    many1Chars digit)
+  let _ ← satisfy fun c => c == 's' || c == 'S'
+  let scaleDigits ← many1Chars digit
+  let scale := scaleDigits.toNat!
+  let mantissaDigits := intPart ++ (match fracPart with | some f => f | none => "")
+  let mantissaNat := mantissaDigits.toNat!
+  let mantissa : Int := Int.ofNat mantissaNat
+  let mantissa := if neg.isSome then -mantissa else mantissa
+  pure (Literal.scaled mantissa scale)
+
 /-- Parse a character literal ($a). -/
 def charLit : Parser Char := do
   ws
@@ -245,6 +262,32 @@ mutual
     let _ ← pchar ')'
     pure (Literal.array elems.toList)
 
+  /-- Parse a literal dictionary (#{ key -> value . ... }). -/
+  partial def literalDict : Parser Literal := attempt do
+    ws
+    let _ ← pstring "#{"
+    let entries ← seqLiteralAssoc
+    ws
+    let _ ← pchar '}'
+    pure (Literal.dict entries)
+  where
+    literalAssoc : Parser (Literal × Literal) := do
+      let key ← literal
+      symbol "->"
+      let value ← literal
+      pure (key, value)
+
+    seqLiteralAssoc : Parser (List (Literal × Literal)) := do
+      let first? ← opt literalAssoc
+      match first? with
+      | none => pure []
+      | some first =>
+        let rest ← many (attempt do
+          symbol "."
+          literalAssoc)
+        let _ ← opt (attempt (symbol "."))
+        pure (first :: rest.toList)
+
   /-- Parse a byte array (#[1 2 3]). -/
   partial def byteArray : Parser Literal := attempt do
     ws
@@ -264,9 +307,11 @@ mutual
   /-- Parse a literal value. -/
   partial def literal : Parser Literal := do
     (attempt literalArray) <|>
+    (attempt literalDict) <|>
     (attempt byteArray) <|>
     (attempt do pure (Literal.symbol (← symbolLit))) <|>
     (attempt do pure (Literal.char (← charLit))) <|>
+    (attempt scaledLit) <|>
     (attempt do pure (Literal.float (← floatLit))) <|>
     (attempt do pure (Literal.int (← intLit))) <|>
     (attempt do pure (Literal.str (← stringLit))) <|>
@@ -397,11 +442,19 @@ mutual
   /-- Parse primary expressions. -/
   partial def primary : Parser Expr := do
     (attempt do pure (Expr.lit (← literal))) <|>
+    (attempt arrayExpr) <|>
     (attempt blockExpr) <|>
     (attempt parenExpr) <|>
     (do
       let name ← ident
       pure (Expr.var name))
+
+  /-- Parse dynamic array expressions: { expr . expr }. -/
+  partial def arrayExpr : Parser Expr := do
+    symbol "{"
+    let elems ← seqExprs
+    symbol "}"
+    pure (Expr.array elems)
 
   /-- Parse block expressions: [ :x :y | | t1 t2 | exprs ] -/
   partial def blockExpr : Parser Expr := do
@@ -428,6 +481,18 @@ mutual
       let value ← expr
       pure (Expr.return value)) <|>
     expr
+
+  /-- Parse a sequence of expressions separated by periods. -/
+  partial def seqExprs : Parser (List Expr) := do
+    let first? ← opt expr
+    match first? with
+    | none => pure []
+    | some first =>
+      let rest ← many (attempt do
+        symbol "."
+        expr)
+      let _ ← opt (attempt (symbol "."))
+      pure (first :: rest.toList)
 
   /-- Parse a sequence of statements separated by periods. -/
   partial def seqStatements : Parser (List Expr) := do
@@ -481,15 +546,38 @@ def methodTemps : Parser (List Symbol) :=
     pure temps.toList) <|>
   pure []
 
+/-- Parse a method pragma (e.g., <primitive: 1>). -/
+def pragma : Parser Pragma := attempt do
+  symbol "<"
+  let (selector, args) ← (attempt keywordPragma <|> unaryPragma)
+  symbol ">"
+  pure { selector := selector, args := args }
+where
+  unaryPragma : Parser (Symbol × List Literal) := do
+    let sel ← unarySelector
+    pure (sel, [])
+
+  keywordPragma : Parser (Symbol × List Literal) := do
+    let firstPart ← keywordPart
+    let firstArg ← literal
+    let rest ← many (attempt do
+      let part ← keywordPart
+      let arg ← literal
+      pure (part, arg))
+    let selector := (firstPart :: rest.toList.map (fun p => p.1)).foldl (· ++ ·) ""
+    let args := firstArg :: rest.toList.map (fun p => p.2)
+    pure (selector, args)
+
 /-- Parse a method definition (selector + temps + body). -/
 def methodParser : Parser Method := do
   ws
   let (selector, params) ← methodHeader
   let temps ← methodTemps
+  let pragmas ← many (attempt pragma)
   let body ← seqStatements
   ws
   eof
-  pure { selector := selector, params := params, temps := temps, body := body }
+  pure { selector := selector, params := params, temps := temps, pragmas := pragmas.toList, body := body }
 
 /-- Parse Smalltalk source into a program (expressions only). -/
 def programParser : Parser Program := do
