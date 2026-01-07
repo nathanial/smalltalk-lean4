@@ -11,19 +11,19 @@ structure ParseError where
   deriving Repr, BEq, Inhabited
 
 /-- Optional parser. -/
-def opt (p : Parser α) : Parser (Option α) :=
+def opt (p : Parser Unit α) : Parser Unit (Option α) :=
   (some <$> attempt p) <|> pure none
 
 /-- Skip whitespace and comments. -/
-partial def ws : Parser Unit := do
+partial def ws : Parser Unit Unit := do
   let _ ← many (wsChar <|> attempt comment)
   pure ()
 where
-  wsChar : Parser Unit := do
+  wsChar : Parser Unit Unit := do
     let _ ← satisfy fun c => c == ' ' || c == '\t' || c == '\n' || c == '\r'
     pure ()
 
-  comment : Parser Unit := do
+  comment : Parser Unit Unit := do
     let _ ← char '"'
     let _ ← many (attempt (string "\"\"" *> pure ()) <|>
       ((satisfy fun c => c != '"') *> pure ()))
@@ -31,31 +31,31 @@ where
     pure ()
 
 /-- Parse a fixed symbol string, skipping leading whitespace. -/
-def symbol (s : String) : Parser Unit := do
+def symbol (s : String) : Parser Unit Unit := do
   ws
   let _ ← string s
   pure ()
 
 /-- Parse an identifier without leading whitespace. -/
-def identRaw : Parser String := do
+def identRaw : Parser Unit String := do
   let first ← satisfy fun c => c.isAlpha || c == '_'
   let rest ← manyChars (satisfy fun c => c.isAlphanum || c == '_')
   pure (first.toString ++ rest)
 
 /-- Parse an identifier with leading whitespace. -/
-def ident : Parser String := do
+def ident : Parser Unit String := do
   ws
   identRaw
 
 /-- Parse a keyword selector part (e.g. "at:"). -/
-def keywordPart : Parser String := attempt do
+def keywordPart : Parser Unit String := attempt do
   ws
   let name ← identRaw
   let _ ← char ':'
   pure (name ++ ":")
 
 /-- Parse a unary selector (identifier not followed by ':'). -/
-def unarySelector : Parser String := attempt do
+def unarySelector : Parser Unit String := attempt do
   ws
   let name ← identRaw
   let next ← peek
@@ -64,7 +64,7 @@ def unarySelector : Parser String := attempt do
   | _ => pure name
 
 /-- Parse a binary selector. -/
-def binarySelector : Parser String := attempt do
+def binarySelector : Parser Unit String := attempt do
   ws
   let chars ← many1Chars (satisfy isBinaryChar)
   pure chars
@@ -73,25 +73,25 @@ where
     "+-*/\\=<>~&|,@%!?".contains c
 
 /-- Parse a string literal using single quotes ('' to escape '). -/
-def stringLitCore (skipWs : Bool) : Parser String := do
+def stringLitCore (skipWs : Bool) : Parser Unit String := do
   if skipWs then ws else pure ()
   let _ ← char '\''
   let chars ← manyChars stringChar
   let _ ← char '\''
   pure chars
 where
-  stringChar : Parser Char :=
+  stringChar : Parser Unit Char :=
     (attempt do
       let _ ← string "''"
       pure '\'') <|>
     satisfy (fun c => c != '\'')
 
 /-- Parse a string literal with leading whitespace. -/
-def stringLit : Parser String :=
+def stringLit : Parser Unit String :=
   stringLitCore true
 
 /-- Parse an integer literal in base 10. -/
-def decimalInt : Parser Int := do
+def decimalInt : Parser Unit Int := do
   ws
   let neg ← Sift.optional (attempt do
     let _ ← char '-'
@@ -104,7 +104,7 @@ def decimalInt : Parser Int := do
   pure (if neg.isSome then -value else value)
 
 /-- Parse a radix integer literal (e.g. 16rFF). -/
-def radixInt : Parser Int := attempt do
+def radixInt : Parser Unit Int := attempt do
   ws
   let neg ← Sift.optional (attempt do
     let _ ← char '-'
@@ -143,11 +143,11 @@ where
       (some 0)
 
 /-- Parse an integer literal. -/
-def intLit : Parser Int :=
+def intLit : Parser Unit Int :=
   radixInt <|> decimalInt
 
 /-- Parse a float literal. -/
-def floatLit : Parser Float := attempt do
+def floatLit : Parser Unit Float := attempt do
   ws
   let sign ← Sift.optional (satisfy fun c => c == '-')
   let intPart ← many1Chars digit
@@ -165,7 +165,7 @@ def floatLit : Parser Float := attempt do
       let numStr := (if sign.isSome then "-" else "") ++ intPart ++ exp
       pure (parseFloatString numStr)
 where
-  exponentPart : Parser String := do
+  exponentPart : Parser Unit String := do
     let _ ← satisfy fun c => c == 'e' || c == 'E'
     let sign ← Sift.optional (satisfy fun c => c == '+' || c == '-')
     let digits ← many1Chars digit
@@ -198,7 +198,7 @@ where
     if negative then -result else result
 
 /-- Parse a scaled decimal literal (e.g., 1s2, 1.23s2). -/
-def scaledLit : Parser Literal := attempt do
+def scaledLit : Parser Unit Literal := attempt do
   ws
   let neg ← Sift.optional (char '-')
   let intPart ← many1Chars digit
@@ -215,13 +215,13 @@ def scaledLit : Parser Literal := attempt do
   pure (Literal.scaled mantissa scale)
 
 /-- Parse a character literal ($a). -/
-def charLit : Parser Char := do
+def charLit : Parser Unit Char := do
   ws
   let _ ← char '$'
   anyChar
 
 /-- Parse a symbol literal (#foo, #at:put:, #'+'). -/
-def symbolLit : Parser String := attempt do
+def symbolLit : Parser Unit String := attempt do
   ws
   let _ ← char '#'
   let next ← peek
@@ -250,7 +250,7 @@ def symbolLit : Parser String := attempt do
 
 mutual
   /-- Parse a literal array (#(...)). -/
-  partial def literalArray : Parser Literal := attempt do
+  partial def literalArray : Parser Unit Literal := attempt do
     ws
     let _ ← string "#("
     let elems ← many (attempt literal)
@@ -259,7 +259,7 @@ mutual
     pure (Literal.array elems.toList)
 
   /-- Parse a literal dictionary (#{ key -> value . ... }). -/
-  partial def literalDict : Parser Literal := attempt do
+  partial def literalDict : Parser Unit Literal := attempt do
     ws
     let _ ← string "#{"
     let entries ← seqLiteralAssoc
@@ -267,13 +267,13 @@ mutual
     let _ ← char '}'
     pure (Literal.dict entries)
   where
-    literalAssoc : Parser (Literal × Literal) := do
+    literalAssoc : Parser Unit (Literal × Literal) := do
       let key ← literal
       symbol "->"
       let value ← literal
       pure (key, value)
 
-    seqLiteralAssoc : Parser (List (Literal × Literal)) := do
+    seqLiteralAssoc : Parser Unit (List (Literal × Literal)) := do
       let first? ← opt literalAssoc
       match first? with
       | none => pure []
@@ -285,7 +285,7 @@ mutual
         pure (first :: rest.toList)
 
   /-- Parse a byte array (#[1 2 3]). -/
-  partial def byteArray : Parser Literal := attempt do
+  partial def byteArray : Parser Unit Literal := attempt do
     ws
     let _ ← string "#["
     let elems ← many (attempt do
@@ -301,7 +301,7 @@ mutual
     pure (Literal.byteArray elems.toList)
 
   /-- Parse a literal value. -/
-  partial def literal : Parser Literal := do
+  partial def literal : Parser Unit Literal := do
     (attempt literalArray) <|>
     (attempt literalDict) <|>
     (attempt byteArray) <|>
@@ -324,7 +324,7 @@ mutual
 end
 
 /-- Parse a block parameter list and temps. -/
-def blockParamsTemps : Parser (List Symbol × List Symbol) := do
+def blockParamsTemps : Parser Unit (List Symbol × List Symbol) := do
   ws
   let next ← peek
   match next with
@@ -341,7 +341,7 @@ def blockParamsTemps : Parser (List Symbol × List Symbol) := do
       let temps ← blockTemps
       pure ([], temps)
 where
-  blockTemps : Parser (List Symbol) :=
+  blockTemps : Parser Unit (List Symbol) :=
     (attempt do
       symbol "|"
       let temps ← many (attempt ident)
@@ -355,7 +355,7 @@ def applyMessages (recv : Expr) (msgs : List Message) : Expr :=
 
 mutual
   /-- Parse a keyword message (selector + args). -/
-  partial def keywordMessage : Parser Message := attempt do
+  partial def keywordMessage : Parser Unit Message := attempt do
     let firstPart ← keywordPart
     let firstArg ← binaryExpr
     let rest ← many (attempt do
@@ -367,22 +367,22 @@ mutual
     pure (selector, args)
 
   /-- Parse a unary message. -/
-  partial def unaryMessage : Parser Message := do
+  partial def unaryMessage : Parser Unit Message := do
     let sel ← unarySelector
     pure (sel, [])
 
   /-- Parse a binary message. -/
-  partial def binaryMessage : Parser Message := do
+  partial def binaryMessage : Parser Unit Message := do
     let sel ← binarySelector
     let arg ← unaryExpr
     pure (sel, [arg])
 
   /-- Parse a full expression. -/
-  partial def expr : Parser Expr := do
+  partial def expr : Parser Unit Expr := do
     assignment <|> cascadeExpr
 
   /-- Parse assignment: name := expr or name _ expr. -/
-  partial def assignment : Parser Expr := attempt do
+  partial def assignment : Parser Unit Expr := attempt do
     let name ← ident
     ws
     let _ ← (string ":=" <|> string "_")
@@ -390,7 +390,7 @@ mutual
     pure (Expr.assign name value)
 
   /-- Parse cascades. -/
-  partial def cascadeExpr : Parser Expr := do
+  partial def cascadeExpr : Parser Unit Expr := do
     let (recv, msgs) ← messageChain
     let firstExpr := applyMessages recv msgs
     let rest ← many (attempt do
@@ -408,7 +408,7 @@ mutual
         pure (Expr.cascade recv chains)
 
   /-- Parse a message chain (unary/binary/keyword). -/
-  partial def messageChain : Parser (Expr × List Message) := do
+  partial def messageChain : Parser Unit (Expr × List Message) := do
     let recv ← primary
     let unarySels ← many (attempt unarySelector)
     let unaryMsgs := unarySels.toList.map (fun s => (s, []))
@@ -421,13 +421,13 @@ mutual
     pure (recv, msgs)
 
   /-- Parse a unary expression (primary + unary messages). -/
-  partial def unaryExpr : Parser Expr := do
+  partial def unaryExpr : Parser Unit Expr := do
     let recv ← primary
     let sels ← many (attempt unarySelector)
     pure (sels.foldl (fun acc sel => Expr.send acc sel []) recv)
 
   /-- Parse a binary expression (left associative). -/
-  partial def binaryExpr : Parser Expr := do
+  partial def binaryExpr : Parser Unit Expr := do
     let recv ← unaryExpr
     let steps ← many (attempt do
       let sel ← binarySelector
@@ -436,7 +436,7 @@ mutual
     pure (steps.foldl (fun acc step => Expr.send acc step.1 [step.2]) recv)
 
   /-- Parse primary expressions. -/
-  partial def primary : Parser Expr := do
+  partial def primary : Parser Unit Expr := do
     (attempt do pure (Expr.lit (← literal))) <|>
     (attempt arrayExpr) <|>
     (attempt blockExpr) <|>
@@ -446,14 +446,14 @@ mutual
       pure (Expr.var name))
 
   /-- Parse dynamic array expressions: { expr . expr }. -/
-  partial def arrayExpr : Parser Expr := do
+  partial def arrayExpr : Parser Unit Expr := do
     symbol "{"
     let elems ← seqExprs
     symbol "}"
     pure (Expr.array elems)
 
   /-- Parse block expressions: [ :x :y | | t1 t2 | exprs ] -/
-  partial def blockExpr : Parser Expr := do
+  partial def blockExpr : Parser Unit Expr := do
     symbol "["
     let (params, temps) ← blockParamsTemps
     let body ← seqStatements
@@ -461,7 +461,7 @@ mutual
     pure (Expr.block params temps body)
 
   /-- Parse parenthesized expressions. -/
-  partial def parenExpr : Parser Expr := do
+  partial def parenExpr : Parser Unit Expr := do
     symbol "("
     let exprs ← seqStatements
     symbol ")"
@@ -471,7 +471,7 @@ mutual
     | es => pure (Expr.seq es)
 
   /-- Parse a statement (return or expression). -/
-  partial def statement : Parser Expr := do
+  partial def statement : Parser Unit Expr := do
     (attempt do
       symbol "^"
       let value ← expr
@@ -479,7 +479,7 @@ mutual
     expr
 
   /-- Parse a sequence of expressions separated by periods. -/
-  partial def seqExprs : Parser (List Expr) := do
+  partial def seqExprs : Parser Unit (List Expr) := do
     let first? ← opt expr
     match first? with
     | none => pure []
@@ -491,7 +491,7 @@ mutual
       pure (first :: rest.toList)
 
   /-- Parse a sequence of statements separated by periods. -/
-  partial def seqStatements : Parser (List Expr) := do
+  partial def seqStatements : Parser Unit (List Expr) := do
     let first? ← opt statement
     match first? with
     | none => pure []
@@ -503,26 +503,26 @@ mutual
       pure (first :: rest.toList)
 
   /-- Parse a cascade message (unary/binary/keyword). -/
-  partial def cascadeMessage : Parser Message :=
+  partial def cascadeMessage : Parser Unit Message :=
     (attempt keywordMessage) <|>
     (attempt binaryMessage) <|>
     unaryMessage
 end
 
 /-- Parse a method header (selector + parameters). -/
-def methodHeader : Parser (Symbol × List Symbol) :=
+def methodHeader : Parser Unit (Symbol × List Symbol) :=
   (attempt keywordHeader) <|> (attempt binaryHeader) <|> unaryHeader
 where
-  unaryHeader : Parser (Symbol × List Symbol) := do
+  unaryHeader : Parser Unit (Symbol × List Symbol) := do
     let sel ← unarySelector
     pure (sel, [])
 
-  binaryHeader : Parser (Symbol × List Symbol) := do
+  binaryHeader : Parser Unit (Symbol × List Symbol) := do
     let sel ← binarySelector
     let name ← ident
     pure (sel, [name])
 
-  keywordHeader : Parser (Symbol × List Symbol) := do
+  keywordHeader : Parser Unit (Symbol × List Symbol) := do
     let firstPart ← keywordPart
     let firstParam ← ident
     let rest ← many (attempt do
@@ -534,7 +534,7 @@ where
     pure (selector, params)
 
 /-- Parse method temporary variables. -/
-def methodTemps : Parser (List Symbol) :=
+def methodTemps : Parser Unit (List Symbol) :=
   (attempt do
     symbol "|"
     let temps ← many (attempt ident)
@@ -543,17 +543,17 @@ def methodTemps : Parser (List Symbol) :=
   pure []
 
 /-- Parse a method pragma (e.g., <primitive: 1>). -/
-def pragma : Parser Pragma := attempt do
+def pragma : Parser Unit Pragma := attempt do
   symbol "<"
   let (selector, args) ← (attempt keywordPragma <|> unaryPragma)
   symbol ">"
   pure { selector := selector, args := args }
 where
-  unaryPragma : Parser (Symbol × List Literal) := do
+  unaryPragma : Parser Unit (Symbol × List Literal) := do
     let sel ← unarySelector
     pure (sel, [])
 
-  keywordPragma : Parser (Symbol × List Literal) := do
+  keywordPragma : Parser Unit (Symbol × List Literal) := do
     let firstPart ← keywordPart
     let firstArg ← literal
     let rest ← many (attempt do
@@ -565,12 +565,12 @@ where
     pure (selector, args)
 
 /-- End of input. -/
-def eof : Parser Unit := do
+def eof : Parser Unit Unit := do
   if ← atEnd then pure ()
   else Parser.fail "expected end of input"
 
 /-- Parse a method definition (selector + temps + body). -/
-def methodParser : Parser Method := do
+def methodParser : Parser Unit Method := do
   ws
   let (selector, params) ← methodHeader
   let temps ← methodTemps
@@ -581,7 +581,7 @@ def methodParser : Parser Method := do
   pure { selector := selector, params := params, temps := temps, pragmas := pragmas.toList, body := body }
 
 /-- Parse Smalltalk source into a program (expressions only). -/
-def programParser : Parser Program := do
+def programParser : Parser Unit Program := do
   ws
   let exprs ← seqStatements
   ws
@@ -596,7 +596,7 @@ def parse (input : String) : Except ParseError Program :=
 
 /-- Parse a single expression. -/
 def parseExpr (input : String) : Except ParseError Expr :=
-  let parser : Parser Expr := do
+  let parser : Parser Unit Expr := do
     ws
     let e ← expr
     ws
