@@ -1,18 +1,14 @@
-import Std.Internal.Parsec
-import Std.Internal.Parsec.String
+import Sift
 import Smalltalk.AST
 
 namespace Smalltalk
 
-open Std.Internal.Parsec
-open Std.Internal.Parsec.String
+open Sift
 
 /-- Parsing errors for source text. -/
 structure ParseError where
   message : String
   deriving Repr, BEq, Inhabited
-
-abbrev Parser := Std.Internal.Parsec.String.Parser
 
 /-- Optional parser. -/
 def opt (p : Parser α) : Parser (Option α) :=
@@ -28,16 +24,16 @@ where
     pure ()
 
   comment : Parser Unit := do
-    let _ ← pchar '"'
-    let _ ← many (attempt (pstring "\"\"" *> pure ()) <|>
+    let _ ← char '"'
+    let _ ← many (attempt (string "\"\"" *> pure ()) <|>
       ((satisfy fun c => c != '"') *> pure ()))
-    let _ ← pchar '"'
+    let _ ← char '"'
     pure ()
 
 /-- Parse a fixed symbol string, skipping leading whitespace. -/
 def symbol (s : String) : Parser Unit := do
   ws
-  let _ ← pstring s
+  let _ ← string s
   pure ()
 
 /-- Parse an identifier without leading whitespace. -/
@@ -55,16 +51,16 @@ def ident : Parser String := do
 def keywordPart : Parser String := attempt do
   ws
   let name ← identRaw
-  let _ ← pchar ':'
+  let _ ← char ':'
   pure (name ++ ":")
 
 /-- Parse a unary selector (identifier not followed by ':'). -/
 def unarySelector : Parser String := attempt do
   ws
   let name ← identRaw
-  let next ← peek?
+  let next ← peek
   match next with
-  | some ':' => fail "keyword selector"
+  | some ':' => Parser.fail "keyword selector"
   | _ => pure name
 
 /-- Parse a binary selector. -/
@@ -79,14 +75,14 @@ where
 /-- Parse a string literal using single quotes ('' to escape '). -/
 def stringLitCore (skipWs : Bool) : Parser String := do
   if skipWs then ws else pure ()
-  let _ ← pchar '\''
+  let _ ← char '\''
   let chars ← manyChars stringChar
-  let _ ← pchar '\''
+  let _ ← char '\''
   pure chars
 where
   stringChar : Parser Char :=
     (attempt do
-      let _ ← pstring "''"
+      let _ ← string "''"
       pure '\'') <|>
     satisfy (fun c => c != '\'')
 
@@ -97,12 +93,12 @@ def stringLit : Parser String :=
 /-- Parse an integer literal in base 10. -/
 def decimalInt : Parser Int := do
   ws
-  let neg ← optional (attempt do
-    let _ ← pchar '-'
-    let next ← peek?
+  let neg ← Sift.optional (attempt do
+    let _ ← char '-'
+    let next ← peek
     match next with
-    | some c => if c.isDigit then pure () else fail "expected digit after '-'"
-    | none => fail "expected digit after '-'")
+    | some c => if c.isDigit then pure () else Parser.fail "expected digit after '-'"
+    | none => Parser.fail "expected digit after '-'")
   let digits ← many1Chars digit
   let value := digits.toNat!
   pure (if neg.isSome then -value else value)
@@ -110,22 +106,22 @@ def decimalInt : Parser Int := do
 /-- Parse a radix integer literal (e.g. 16rFF). -/
 def radixInt : Parser Int := attempt do
   ws
-  let neg ← optional (attempt do
-    let _ ← pchar '-'
-    let next ← peek?
+  let neg ← Sift.optional (attempt do
+    let _ ← char '-'
+    let next ← peek
     match next with
-    | some c => if c.isDigit then pure () else fail "expected digit after '-'"
-    | none => fail "expected digit after '-'"
+    | some c => if c.isDigit then pure () else Parser.fail "expected digit after '-'"
+    | none => Parser.fail "expected digit after '-'"
   )
   let baseDigits ← many1Chars digit
   let base := baseDigits.toNat!
   if base < 2 || base > 36 then
-    fail "invalid radix"
+    Parser.fail "invalid radix"
   let _ ← satisfy fun c => c == 'r' || c == 'R'
   let digits ← many1Chars (satisfy isRadixDigit)
   let value ← match radixValue base digits with
     | some v => pure v
-    | none => fail "invalid radix digit"
+    | none => Parser.fail "invalid radix digit"
   let intVal : Int := Int.ofNat value
   pure (if neg.isSome then -intVal else intVal)
 where
@@ -153,9 +149,9 @@ def intLit : Parser Int :=
 /-- Parse a float literal. -/
 def floatLit : Parser Float := attempt do
   ws
-  let sign ← optional (satisfy fun c => c == '-')
+  let sign ← Sift.optional (satisfy fun c => c == '-')
   let intPart ← many1Chars digit
-  let hasDot ← opt (attempt (pchar '.'))
+  let hasDot ← opt (attempt (char '.'))
   match hasDot with
   | some _ =>
       let fracPart ← many1Chars digit
@@ -171,7 +167,7 @@ def floatLit : Parser Float := attempt do
 where
   exponentPart : Parser String := do
     let _ ← satisfy fun c => c == 'e' || c == 'E'
-    let sign ← optional (satisfy fun c => c == '+' || c == '-')
+    let sign ← Sift.optional (satisfy fun c => c == '+' || c == '-')
     let digits ← many1Chars digit
     pure ("e" ++ (match sign with | some c => c.toString | none => "") ++ digits)
 
@@ -204,10 +200,10 @@ where
 /-- Parse a scaled decimal literal (e.g., 1s2, 1.23s2). -/
 def scaledLit : Parser Literal := attempt do
   ws
-  let neg ← optional (pchar '-')
+  let neg ← Sift.optional (char '-')
   let intPart ← many1Chars digit
   let fracPart ← opt (attempt do
-    let _ ← pchar '.'
+    let _ ← char '.'
     many1Chars digit)
   let _ ← satisfy fun c => c == 's' || c == 'S'
   let scaleDigits ← many1Chars digit
@@ -221,14 +217,14 @@ def scaledLit : Parser Literal := attempt do
 /-- Parse a character literal ($a). -/
 def charLit : Parser Char := do
   ws
-  let _ ← pchar '$'
-  any
+  let _ ← char '$'
+  anyChar
 
 /-- Parse a symbol literal (#foo, #at:put:, #'+'). -/
 def symbolLit : Parser String := attempt do
   ws
-  let _ ← pchar '#'
-  let next ← peek?
+  let _ ← char '#'
+  let next ← peek
   match next with
   | some '\'' =>
       let s ← stringLitCore false
@@ -239,36 +235,36 @@ def symbolLit : Parser String := attempt do
         pure chars
       else
         let name ← identRaw
-        let next2 ← peek?
+        let next2 ← peek
         match next2 with
         | some ':' =>
-            let _ ← pchar ':'
+            let _ ← char ':'
             let rest ← many (attempt do
               let part ← identRaw
-              let _ ← pchar ':'
+              let _ ← char ':'
               pure (part ++ ":"))
             let selector := (name ++ ":") ++ rest.toList.foldl (· ++ ·) ""
             pure selector
         | _ => pure name
-  | none => fail "unexpected end of input"
+  | none => Parser.fail "unexpected end of input"
 
 mutual
   /-- Parse a literal array (#(...)). -/
   partial def literalArray : Parser Literal := attempt do
     ws
-    let _ ← pstring "#("
+    let _ ← string "#("
     let elems ← many (attempt literal)
     ws
-    let _ ← pchar ')'
+    let _ ← char ')'
     pure (Literal.array elems.toList)
 
   /-- Parse a literal dictionary (#{ key -> value . ... }). -/
   partial def literalDict : Parser Literal := attempt do
     ws
-    let _ ← pstring "#{"
+    let _ ← string "#{"
     let entries ← seqLiteralAssoc
     ws
-    let _ ← pchar '}'
+    let _ ← char '}'
     pure (Literal.dict entries)
   where
     literalAssoc : Parser (Literal × Literal) := do
@@ -291,17 +287,17 @@ mutual
   /-- Parse a byte array (#[1 2 3]). -/
   partial def byteArray : Parser Literal := attempt do
     ws
-    let _ ← pstring "#["
+    let _ ← string "#["
     let elems ← many (attempt do
       let n ← intLit
       if n < 0 then
-        fail "byte array element must be non-negative"
+        Parser.fail "byte array element must be non-negative"
       let natVal := n.natAbs
       if natVal > 255 then
-        fail "byte array element out of range"
+        Parser.fail "byte array element out of range"
       pure (UInt8.ofNat natVal))
     ws
-    let _ ← pchar ']'
+    let _ ← char ']'
     pure (Literal.byteArray elems.toList)
 
   /-- Parse a literal value. -/
@@ -324,17 +320,17 @@ mutual
       else if name == "nil" then
         pure Literal.nil
       else
-        fail "expected literal")
+        Parser.fail "expected literal")
 end
 
 /-- Parse a block parameter list and temps. -/
 def blockParamsTemps : Parser (List Symbol × List Symbol) := do
   ws
-  let next ← peek?
+  let next ← peek
   match next with
   | some ':' =>
       let params ← many1 (attempt do
-        let _ ← pchar ':'
+        let _ ← char ':'
         let name ← identRaw
         ws
         pure name)
@@ -389,7 +385,7 @@ mutual
   partial def assignment : Parser Expr := attempt do
     let name ← ident
     ws
-    let _ ← (pstring ":=" <|> pstring "_")
+    let _ ← (string ":=" <|> string "_")
     let value ← expr
     pure (Expr.assign name value)
 
@@ -405,7 +401,7 @@ mutual
       pure firstExpr
     else
       if msgs.isEmpty then
-        fail "cascade requires a message"
+        Parser.fail "cascade requires a message"
       else
         let chains : List MessageChain :=
           (msgs :: rest.toList.map (fun m => [m]))
@@ -470,7 +466,7 @@ mutual
     let exprs ← seqStatements
     symbol ")"
     match exprs with
-    | [] => fail "empty parentheses"
+    | [] => Parser.fail "empty parentheses"
     | [e] => pure e
     | es => pure (Expr.seq es)
 
@@ -568,6 +564,11 @@ where
     let args := firstArg :: rest.toList.map (fun p => p.2)
     pure (selector, args)
 
+/-- End of input. -/
+def eof : Parser Unit := do
+  if ← atEnd then pure ()
+  else Parser.fail "expected end of input"
+
 /-- Parse a method definition (selector + temps + body). -/
 def methodParser : Parser Method := do
   ws
@@ -589,9 +590,9 @@ def programParser : Parser Program := do
 
 /-- Parse Smalltalk source into a program. -/
 def parse (input : String) : Except ParseError Program :=
-  match Std.Internal.Parsec.String.Parser.run programParser input with
+  match Parser.run programParser input with
   | .ok program => .ok program
-  | .error err => .error { message := err }
+  | .error err => .error { message := s!"Parse error at {err.pos.line}:{err.pos.column}: {err.message}" }
 
 /-- Parse a single expression. -/
 def parseExpr (input : String) : Except ParseError Expr :=
@@ -601,14 +602,14 @@ def parseExpr (input : String) : Except ParseError Expr :=
     ws
     eof
     pure e
-  match Std.Internal.Parsec.String.Parser.run parser input with
+  match Parser.run parser input with
   | .ok e => .ok e
-  | .error err => .error { message := err }
+  | .error err => .error { message := s!"Parse error at {err.pos.line}:{err.pos.column}: {err.message}" }
 
 /-- Parse a method definition. -/
 def parseMethod (input : String) : Except ParseError Method :=
-  match Std.Internal.Parsec.String.Parser.run methodParser input with
+  match Parser.run methodParser input with
   | .ok m => .ok m
-  | .error err => .error { message := err }
+  | .error err => .error { message := s!"Parse error at {err.pos.line}:{err.pos.column}: {err.message}" }
 
 end Smalltalk
