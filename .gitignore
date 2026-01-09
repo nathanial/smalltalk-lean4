@@ -1,7 +1,6 @@
 # Lake build artifacts
 build/
 .lake/
-lake-manifest.json
 
 # Editor files
 .vscode/
