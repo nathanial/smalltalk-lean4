@@ -64,6 +64,6 @@ test "parse method pragmas" := do
       shouldSatisfy (m == expected) "pragmas should parse"
   | .error e => throw (IO.userError s!"parse error: {e.message}")
 
-#generate_tests
+
 
 end MethodTests

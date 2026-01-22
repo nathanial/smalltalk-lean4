@@ -26,6 +26,6 @@ test "block temps construction" := do
   let same := Expr.block ["x"] ["tmp"] [Expr.var "x"]
   shouldSatisfy (expr == same) "blocks should be equal"
 
-#generate_tests
+
 
 end ASTTests

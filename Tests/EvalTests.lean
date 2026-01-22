@@ -18,6 +18,6 @@ test "eval stub returns error" := do
   | .error e =>
     shouldSatisfy (e.message == "interpreter not implemented") "expected stub error"
 
-#generate_tests
+
 
 end EvalTests

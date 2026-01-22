@@ -178,6 +178,6 @@ test "parse expression entrypoint" := do
   let expr ← parseOne "1 + 2"
   expr ≡ Expr.send (Expr.lit (.int 1)) "+" [Expr.lit (.int 2)]
 
-#generate_tests
+
 
 end ParserTests
