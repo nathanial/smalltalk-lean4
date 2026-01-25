@@ -4,6 +4,10 @@ import Smalltalk.Primitives
 
 namespace Smalltalk
 
+/-- Check if a string contains a substring -/
+def String.containsSubstr (s : String) (sub : String) : Bool :=
+  (s.splitOn sub).length > 1
+
 /-- Evaluation errors for the interpreter. -/
 structure EvalError where
   message : String
@@ -171,6 +175,113 @@ mutual
         | [.int m, blockVal] =>
             evalToDo state n m blockVal
         | _ => .error { message := "to:do: expects an integer and a block" }
+    -- Array iteration methods
+    | .array elems, "do:" =>
+        match argVals with
+        | [blockVal] => evalArrayDo state elems blockVal
+        | _ => .error { message := "do: expects exactly 1 argument" }
+    | .array elems, "collect:" =>
+        match argVals with
+        | [blockVal] => evalArrayCollect state elems blockVal
+        | _ => .error { message := "collect: expects exactly 1 argument" }
+    | .array elems, "select:" =>
+        match argVals with
+        | [blockVal] => evalArraySelect state elems blockVal
+        | _ => .error { message := "select: expects exactly 1 argument" }
+    | .array elems, "reject:" =>
+        match argVals with
+        | [blockVal] => evalArrayReject state elems blockVal
+        | _ => .error { message := "reject: expects exactly 1 argument" }
+    | .array elems, "detect:" =>
+        match argVals with
+        | [blockVal] => evalArrayDetect state elems blockVal
+        | _ => .error { message := "detect: expects exactly 1 argument" }
+    | .array elems, "detect:ifNone:" =>
+        match argVals with
+        | [blockVal, noneBlock] => evalArrayDetectIfNone state elems blockVal noneBlock
+        | _ => .error { message := "detect:ifNone: expects exactly 2 arguments" }
+    | .array elems, "inject:into:" =>
+        match argVals with
+        | [initial, blockVal] => evalArrayInject state elems initial blockVal
+        | _ => .error { message := "inject:into: expects exactly 2 arguments" }
+    | .array elems, "includes:" =>
+        match argVals with
+        | [val] => .ok (state, .bool (elems.any fun e => valueIdentical e val))
+        | _ => .error { message := "includes: expects exactly 1 argument" }
+    | .array elems, "indexOf:" =>
+        match argVals with
+        | [val] =>
+            match elems.findIdx? (fun e => valueIdentical e val) with
+            | some idx => .ok (state, .int (idx + 1))  -- 1-indexed
+            | none => .ok (state, .int 0)  -- 0 means not found
+        | _ => .error { message := "indexOf: expects exactly 1 argument" }
+    -- String iteration methods
+    | .str s, "do:" =>
+        match argVals with
+        | [blockVal] => evalStringDo state s blockVal
+        | _ => .error { message := "do: expects exactly 1 argument" }
+    | .str s, "collect:" =>
+        match argVals with
+        | [blockVal] => evalStringCollect state s blockVal
+        | _ => .error { message := "collect: expects exactly 1 argument" }
+    | .str s, "select:" =>
+        match argVals with
+        | [blockVal] => evalStringSelect state s blockVal
+        | _ => .error { message := "select: expects exactly 1 argument" }
+    | .str s, "reject:" =>
+        match argVals with
+        | [blockVal] => evalStringReject state s blockVal
+        | _ => .error { message := "reject: expects exactly 1 argument" }
+    | .str s, "detect:" =>
+        match argVals with
+        | [blockVal] => evalStringDetect state s blockVal
+        | _ => .error { message := "detect: expects exactly 1 argument" }
+    | .str s, "detect:ifNone:" =>
+        match argVals with
+        | [blockVal, noneBlock] => evalStringDetectIfNone state s blockVal noneBlock
+        | _ => .error { message := "detect:ifNone: expects exactly 2 arguments" }
+    | .str s, "inject:into:" =>
+        match argVals with
+        | [initial, blockVal] => evalStringInject state s initial blockVal
+        | _ => .error { message := "inject:into: expects exactly 2 arguments" }
+    | .str s, "includes:" =>
+        match argVals with
+        | [.char c] => .ok (state, .bool (s.any (· == c)))
+        | [.str sub] => .ok (state, .bool (String.containsSubstr s sub))
+        | _ => .error { message := "includes: expects a Character or String" }
+    -- Dictionary iteration methods
+    | .dict entries, "do:" =>
+        match argVals with
+        | [blockVal] => evalDictDo state entries blockVal
+        | _ => .error { message := "do: expects exactly 1 argument" }
+    | .dict entries, "keysAndValuesDo:" =>
+        match argVals with
+        | [blockVal] => evalDictKeysAndValuesDo state entries blockVal
+        | _ => .error { message := "keysAndValuesDo: expects exactly 1 argument" }
+    | .dict entries, "collect:" =>
+        match argVals with
+        | [blockVal] => evalDictCollect state entries blockVal
+        | _ => .error { message := "collect: expects exactly 1 argument" }
+    | .dict entries, "select:" =>
+        match argVals with
+        | [blockVal] => evalDictSelect state entries blockVal
+        | _ => .error { message := "select: expects exactly 1 argument" }
+    | .dict entries, "reject:" =>
+        match argVals with
+        | [blockVal] => evalDictReject state entries blockVal
+        | _ => .error { message := "reject: expects exactly 1 argument" }
+    | .dict entries, "detect:" =>
+        match argVals with
+        | [blockVal] => evalDictDetect state entries blockVal
+        | _ => .error { message := "detect: expects exactly 1 argument" }
+    | .dict entries, "detect:ifNone:" =>
+        match argVals with
+        | [blockVal, noneBlock] => evalDictDetectIfNone state entries blockVal noneBlock
+        | _ => .error { message := "detect:ifNone: expects exactly 2 arguments" }
+    | .dict entries, "inject:into:" =>
+        match argVals with
+        | [initial, blockVal] => evalDictInject state entries initial blockVal
+        | _ => .error { message := "inject:into: expects exactly 2 arguments" }
     | _, _ =>
     -- Get the class name for this value (works for both objects and built-in types)
     let className := match recvVal with
@@ -317,6 +428,283 @@ mutual
     else
       let (state', _) ← evalBlockValue state blockVal [.int start]
       evalToDo state' (start + 1) stop blockVal
+
+  /-- Array do: - evaluate block for each element, return nil -/
+  partial def evalArrayDo (state : ExecState) (elems : List Value) (blockVal : Value)
+      : Except EvalError (ExecState × Value) := do
+    let mut currentState := state
+    for elem in elems do
+      let (newState, _) ← evalBlockValue currentState blockVal [elem]
+      currentState := newState
+    .ok (currentState, .nil)
+
+  /-- Array collect: - transform each element, return new array -/
+  partial def evalArrayCollect (state : ExecState) (elems : List Value) (blockVal : Value)
+      : Except EvalError (ExecState × Value) := do
+    let mut currentState := state
+    let mut results : List Value := []
+    for elem in elems do
+      let (newState, result) ← evalBlockValue currentState blockVal [elem]
+      currentState := newState
+      results := results ++ [result]
+    .ok (currentState, .array results)
+
+  /-- Array select: - filter elements where block returns true -/
+  partial def evalArraySelect (state : ExecState) (elems : List Value) (blockVal : Value)
+      : Except EvalError (ExecState × Value) := do
+    let mut currentState := state
+    let mut results : List Value := []
+    for elem in elems do
+      let (newState, result) ← evalBlockValue currentState blockVal [elem]
+      currentState := newState
+      match result with
+      | .bool true => results := results ++ [elem]
+      | .bool false => pure ()
+      | _ => throw { message := "select: block must return Boolean" }
+    .ok (currentState, .array results)
+
+  /-- Array reject: - filter elements where block returns false -/
+  partial def evalArrayReject (state : ExecState) (elems : List Value) (blockVal : Value)
+      : Except EvalError (ExecState × Value) := do
+    let mut currentState := state
+    let mut results : List Value := []
+    for elem in elems do
+      let (newState, result) ← evalBlockValue currentState blockVal [elem]
+      currentState := newState
+      match result with
+      | .bool false => results := results ++ [elem]
+      | .bool true => pure ()
+      | _ => throw { message := "reject: block must return Boolean" }
+    .ok (currentState, .array results)
+
+  /-- Array detect: - find first element where block returns true -/
+  partial def evalArrayDetect (state : ExecState) (elems : List Value) (blockVal : Value)
+      : Except EvalError (ExecState × Value) := do
+    let mut currentState := state
+    for elem in elems do
+      let (newState, result) ← evalBlockValue currentState blockVal [elem]
+      currentState := newState
+      match result with
+      | .bool true => return (currentState, elem)
+      | .bool false => pure ()
+      | _ => throw { message := "detect: block must return Boolean" }
+    .error { message := "detect: no element found" }
+
+  /-- Array detect:ifNone: - find first or evaluate none block -/
+  partial def evalArrayDetectIfNone (state : ExecState) (elems : List Value)
+      (blockVal : Value) (noneBlock : Value) : Except EvalError (ExecState × Value) := do
+    let mut currentState := state
+    for elem in elems do
+      let (newState, result) ← evalBlockValue currentState blockVal [elem]
+      currentState := newState
+      match result with
+      | .bool true => return (currentState, elem)
+      | .bool false => pure ()
+      | _ => throw { message := "detect:ifNone: block must return Boolean" }
+    evalBlockValue currentState noneBlock []
+
+  /-- Array inject:into: - fold/reduce with accumulator -/
+  partial def evalArrayInject (state : ExecState) (elems : List Value)
+      (initial : Value) (blockVal : Value) : Except EvalError (ExecState × Value) := do
+    let mut currentState := state
+    let mut acc := initial
+    for elem in elems do
+      let (newState, result) ← evalBlockValue currentState blockVal [acc, elem]
+      currentState := newState
+      acc := result
+    .ok (currentState, acc)
+
+  /-- String do: - evaluate block for each character -/
+  partial def evalStringDo (state : ExecState) (s : String) (blockVal : Value)
+      : Except EvalError (ExecState × Value) := do
+    let chars := s.toList
+    let mut currentState := state
+    for c in chars do
+      let (newState, _) ← evalBlockValue currentState blockVal [.char c]
+      currentState := newState
+    .ok (currentState, .nil)
+
+  /-- String collect: - transform each character -/
+  partial def evalStringCollect (state : ExecState) (s : String) (blockVal : Value)
+      : Except EvalError (ExecState × Value) := do
+    let chars := s.toList
+    let mut currentState := state
+    let mut results : List Value := []
+    for c in chars do
+      let (newState, result) ← evalBlockValue currentState blockVal [.char c]
+      currentState := newState
+      results := results ++ [result]
+    -- Try to produce a string if all results are characters
+    let allChars := results.all fun v => match v with | .char _ => true | _ => false
+    if allChars then
+      let str := String.ofList (results.filterMap fun v => match v with | .char c => some c | _ => none)
+      .ok (currentState, .str str)
+    else
+      .ok (currentState, .array results)
+
+  /-- String select: - filter characters where block returns true -/
+  partial def evalStringSelect (state : ExecState) (s : String) (blockVal : Value)
+      : Except EvalError (ExecState × Value) := do
+    let chars := s.toList
+    let mut currentState := state
+    let mut results : List Char := []
+    for c in chars do
+      let (newState, result) ← evalBlockValue currentState blockVal [.char c]
+      currentState := newState
+      match result with
+      | .bool true => results := results ++ [c]
+      | .bool false => pure ()
+      | _ => throw { message := "select: block must return Boolean" }
+    .ok (currentState, .str (String.ofList results))
+
+  /-- String reject: - filter characters where block returns false -/
+  partial def evalStringReject (state : ExecState) (s : String) (blockVal : Value)
+      : Except EvalError (ExecState × Value) := do
+    let chars := s.toList
+    let mut currentState := state
+    let mut results : List Char := []
+    for c in chars do
+      let (newState, result) ← evalBlockValue currentState blockVal [.char c]
+      currentState := newState
+      match result with
+      | .bool false => results := results ++ [c]
+      | .bool true => pure ()
+      | _ => throw { message := "reject: block must return Boolean" }
+    .ok (currentState, .str (String.ofList results))
+
+  /-- String detect: - find first character where block returns true -/
+  partial def evalStringDetect (state : ExecState) (s : String) (blockVal : Value)
+      : Except EvalError (ExecState × Value) := do
+    let chars := s.toList
+    let mut currentState := state
+    for c in chars do
+      let (newState, result) ← evalBlockValue currentState blockVal [.char c]
+      currentState := newState
+      match result with
+      | .bool true => return (currentState, .char c)
+      | .bool false => pure ()
+      | _ => throw { message := "detect: block must return Boolean" }
+    .error { message := "detect: no element found" }
+
+  /-- String detect:ifNone: - find first or evaluate none block -/
+  partial def evalStringDetectIfNone (state : ExecState) (s : String)
+      (blockVal : Value) (noneBlock : Value) : Except EvalError (ExecState × Value) := do
+    let chars := s.toList
+    let mut currentState := state
+    for c in chars do
+      let (newState, result) ← evalBlockValue currentState blockVal [.char c]
+      currentState := newState
+      match result with
+      | .bool true => return (currentState, .char c)
+      | .bool false => pure ()
+      | _ => throw { message := "detect:ifNone: block must return Boolean" }
+    evalBlockValue currentState noneBlock []
+
+  /-- String inject:into: - fold/reduce with accumulator -/
+  partial def evalStringInject (state : ExecState) (s : String)
+      (initial : Value) (blockVal : Value) : Except EvalError (ExecState × Value) := do
+    let chars := s.toList
+    let mut currentState := state
+    let mut acc := initial
+    for c in chars do
+      let (newState, result) ← evalBlockValue currentState blockVal [acc, .char c]
+      currentState := newState
+      acc := result
+    .ok (currentState, acc)
+
+  /-- Dictionary do: - evaluate block for each value -/
+  partial def evalDictDo (state : ExecState) (entries : List (Value × Value)) (blockVal : Value)
+      : Except EvalError (ExecState × Value) := do
+    let mut currentState := state
+    for (_, v) in entries do
+      let (newState, _) ← evalBlockValue currentState blockVal [v]
+      currentState := newState
+    .ok (currentState, .nil)
+
+  /-- Dictionary keysAndValuesDo: - evaluate block for each key-value pair -/
+  partial def evalDictKeysAndValuesDo (state : ExecState) (entries : List (Value × Value)) (blockVal : Value)
+      : Except EvalError (ExecState × Value) := do
+    let mut currentState := state
+    for (k, v) in entries do
+      let (newState, _) ← evalBlockValue currentState blockVal [k, v]
+      currentState := newState
+    .ok (currentState, .nil)
+
+  /-- Dictionary collect: - transform each value -/
+  partial def evalDictCollect (state : ExecState) (entries : List (Value × Value)) (blockVal : Value)
+      : Except EvalError (ExecState × Value) := do
+    let mut currentState := state
+    let mut results : List Value := []
+    for (_, v) in entries do
+      let (newState, result) ← evalBlockValue currentState blockVal [v]
+      currentState := newState
+      results := results ++ [result]
+    .ok (currentState, .array results)
+
+  /-- Dictionary select: - filter entries where block returns true (block receives value) -/
+  partial def evalDictSelect (state : ExecState) (entries : List (Value × Value)) (blockVal : Value)
+      : Except EvalError (ExecState × Value) := do
+    let mut currentState := state
+    let mut results : List (Value × Value) := []
+    for (k, v) in entries do
+      let (newState, result) ← evalBlockValue currentState blockVal [v]
+      currentState := newState
+      match result with
+      | .bool true => results := results ++ [(k, v)]
+      | .bool false => pure ()
+      | _ => throw { message := "select: block must return Boolean" }
+    .ok (currentState, .dict results)
+
+  /-- Dictionary reject: - filter entries where block returns false (block receives value) -/
+  partial def evalDictReject (state : ExecState) (entries : List (Value × Value)) (blockVal : Value)
+      : Except EvalError (ExecState × Value) := do
+    let mut currentState := state
+    let mut results : List (Value × Value) := []
+    for (k, v) in entries do
+      let (newState, result) ← evalBlockValue currentState blockVal [v]
+      currentState := newState
+      match result with
+      | .bool false => results := results ++ [(k, v)]
+      | .bool true => pure ()
+      | _ => throw { message := "reject: block must return Boolean" }
+    .ok (currentState, .dict results)
+
+  /-- Dictionary detect: - find first value where block returns true -/
+  partial def evalDictDetect (state : ExecState) (entries : List (Value × Value)) (blockVal : Value)
+      : Except EvalError (ExecState × Value) := do
+    let mut currentState := state
+    for (_, v) in entries do
+      let (newState, result) ← evalBlockValue currentState blockVal [v]
+      currentState := newState
+      match result with
+      | .bool true => return (currentState, v)
+      | .bool false => pure ()
+      | _ => throw { message := "detect: block must return Boolean" }
+    .error { message := "detect: no element found" }
+
+  /-- Dictionary detect:ifNone: - find first value or evaluate none block -/
+  partial def evalDictDetectIfNone (state : ExecState) (entries : List (Value × Value))
+      (blockVal : Value) (noneBlock : Value) : Except EvalError (ExecState × Value) := do
+    let mut currentState := state
+    for (_, v) in entries do
+      let (newState, result) ← evalBlockValue currentState blockVal [v]
+      currentState := newState
+      match result with
+      | .bool true => return (currentState, v)
+      | .bool false => pure ()
+      | _ => throw { message := "detect:ifNone: block must return Boolean" }
+    evalBlockValue currentState noneBlock []
+
+  /-- Dictionary inject:into: - fold/reduce with accumulator over values -/
+  partial def evalDictInject (state : ExecState) (entries : List (Value × Value))
+      (initial : Value) (blockVal : Value) : Except EvalError (ExecState × Value) := do
+    let mut currentState := state
+    let mut acc := initial
+    for (_, v) in entries do
+      let (newState, result) ← evalBlockValue currentState blockVal [acc, v]
+      currentState := newState
+      acc := result
+    .ok (currentState, acc)
 
   /-- Evaluate a single expression. -/
   partial def evalExpr (state : ExecState) (expr : Expr) : Except EvalError (ExecState × Value) :=

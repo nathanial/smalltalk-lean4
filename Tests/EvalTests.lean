@@ -1218,4 +1218,341 @@ test "true and false have different classes" := do
   | .error e =>
       throw (IO.userError s!"unexpected error: {e.message}")
 
+-- ============ Collection Iteration Tests ============
+
+-- Array do: tests
+test "array do: iterates all elements" := do
+  -- | sum | sum := 0. #(1 2 3) do: [:x | sum := sum + x]. sum => 6
+  let program := mkProgram [
+    .assign "sum" (.lit (.int 0)),
+    .send (.array [.lit (.int 1), .lit (.int 2), .lit (.int 3)]) "do:"
+      [.block ["x"] [] [.assign "sum" (.send (.var "sum") "+" [.var "x"])]],
+    .var "sum"
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.int 6)) s!"expected 6, got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+test "array do: returns nil" := do
+  shouldEvalTo
+    (.send (.array [.lit (.int 1), .lit (.int 2)]) "do:" [.block ["x"] [] [.var "x"]])
+    .nil
+
+test "array do: empty array" := do
+  let program := mkProgram [
+    .assign "count" (.lit (.int 0)),
+    .send (.array []) "do:" [.block ["x"] [] [.assign "count" (.send (.var "count") "+" [.lit (.int 1)])]],
+    .var "count"
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.int 0)) s!"expected 0, got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+-- Array collect: tests
+test "array collect: transforms elements" := do
+  -- #(1 2 3) collect: [:x | x * 2] => #(2 4 6)
+  shouldEvalTo
+    (.send (.array [.lit (.int 1), .lit (.int 2), .lit (.int 3)]) "collect:"
+      [.block ["x"] [] [.send (.var "x") "*" [.lit (.int 2)]]])
+    (.array [.int 2, .int 4, .int 6])
+
+test "array collect: empty array" := do
+  shouldEvalTo
+    (.send (.array []) "collect:" [.block ["x"] [] [.send (.var "x") "*" [.lit (.int 2)]]])
+    (.array [])
+
+test "array collect: type change" := do
+  -- #(1 2 3) collect: [:x | x > 1] => #(false true true)
+  shouldEvalTo
+    (.send (.array [.lit (.int 1), .lit (.int 2), .lit (.int 3)]) "collect:"
+      [.block ["x"] [] [.send (.var "x") ">" [.lit (.int 1)]]])
+    (.array [.bool false, .bool true, .bool true])
+
+-- Array select: tests
+test "array select: filters elements" := do
+  -- #(1 2 3 4 5) select: [:x | x > 2] => #(3 4 5)
+  shouldEvalTo
+    (.send (.array [.lit (.int 1), .lit (.int 2), .lit (.int 3), .lit (.int 4), .lit (.int 5)])
+      "select:" [.block ["x"] [] [.send (.var "x") ">" [.lit (.int 2)]]])
+    (.array [.int 3, .int 4, .int 5])
+
+test "array select: empty result" := do
+  -- #(1 2 3) select: [:x | x > 10] => #()
+  shouldEvalTo
+    (.send (.array [.lit (.int 1), .lit (.int 2), .lit (.int 3)])
+      "select:" [.block ["x"] [] [.send (.var "x") ">" [.lit (.int 10)]]])
+    (.array [])
+
+test "array select: all elements" := do
+  -- #(1 2 3) select: [:x | x > 0] => #(1 2 3)
+  shouldEvalTo
+    (.send (.array [.lit (.int 1), .lit (.int 2), .lit (.int 3)])
+      "select:" [.block ["x"] [] [.send (.var "x") ">" [.lit (.int 0)]]])
+    (.array [.int 1, .int 2, .int 3])
+
+-- Array reject: tests
+test "array reject: filters out elements" := do
+  -- #(1 2 3 4 5) reject: [:x | x > 2] => #(1 2)
+  shouldEvalTo
+    (.send (.array [.lit (.int 1), .lit (.int 2), .lit (.int 3), .lit (.int 4), .lit (.int 5)])
+      "reject:" [.block ["x"] [] [.send (.var "x") ">" [.lit (.int 2)]]])
+    (.array [.int 1, .int 2])
+
+test "array reject: keep all elements" := do
+  -- #(1 2 3) reject: [:x | x > 10] => #(1 2 3)
+  shouldEvalTo
+    (.send (.array [.lit (.int 1), .lit (.int 2), .lit (.int 3)])
+      "reject:" [.block ["x"] [] [.send (.var "x") ">" [.lit (.int 10)]]])
+    (.array [.int 1, .int 2, .int 3])
+
+-- Array detect: tests
+test "array detect: finds first match" := do
+  -- #(1 2 3 4 5) detect: [:x | x > 2] => 3
+  shouldEvalTo
+    (.send (.array [.lit (.int 1), .lit (.int 2), .lit (.int 3), .lit (.int 4), .lit (.int 5)])
+      "detect:" [.block ["x"] [] [.send (.var "x") ">" [.lit (.int 2)]]])
+    (.int 3)
+
+test "array detect: no match error" := do
+  shouldEvalError
+    (.send (.array [.lit (.int 1), .lit (.int 2), .lit (.int 3)])
+      "detect:" [.block ["x"] [] [.send (.var "x") ">" [.lit (.int 10)]]])
+    "no element found"
+
+-- Array detect:ifNone: tests
+test "array detect:ifNone: finds match" := do
+  -- #(1 2 3) detect: [:x | x > 2] ifNone: [0] => 3
+  shouldEvalTo
+    (.send (.array [.lit (.int 1), .lit (.int 2), .lit (.int 3)])
+      "detect:ifNone:" [.block ["x"] [] [.send (.var "x") ">" [.lit (.int 2)]], .block [] [] [.lit (.int 0)]])
+    (.int 3)
+
+test "array detect:ifNone: returns none block result" := do
+  -- #(1 2 3) detect: [:x | x > 10] ifNone: [99] => 99
+  shouldEvalTo
+    (.send (.array [.lit (.int 1), .lit (.int 2), .lit (.int 3)])
+      "detect:ifNone:" [.block ["x"] [] [.send (.var "x") ">" [.lit (.int 10)]], .block [] [] [.lit (.int 99)]])
+    (.int 99)
+
+-- Array inject:into: tests
+test "array inject:into: sums elements" := do
+  -- #(1 2 3 4) inject: 0 into: [:sum :x | sum + x] => 10
+  shouldEvalTo
+    (.send (.array [.lit (.int 1), .lit (.int 2), .lit (.int 3), .lit (.int 4)])
+      "inject:into:" [.lit (.int 0), .block ["sum", "x"] [] [.send (.var "sum") "+" [.var "x"]]])
+    (.int 10)
+
+test "array inject:into: product of elements" := do
+  -- #(1 2 3 4) inject: 1 into: [:prod :x | prod * x] => 24
+  shouldEvalTo
+    (.send (.array [.lit (.int 1), .lit (.int 2), .lit (.int 3), .lit (.int 4)])
+      "inject:into:" [.lit (.int 1), .block ["prod", "x"] [] [.send (.var "prod") "*" [.var "x"]]])
+    (.int 24)
+
+test "array inject:into: empty array" := do
+  -- #() inject: 42 into: [:acc :x | acc + x] => 42
+  shouldEvalTo
+    (.send (.array [])
+      "inject:into:" [.lit (.int 42), .block ["acc", "x"] [] [.send (.var "acc") "+" [.var "x"]]])
+    (.int 42)
+
+-- Array includes: tests
+test "array includes: found" := do
+  -- #(1 2 3) includes: 2 => true
+  shouldEvalTo
+    (.send (.array [.lit (.int 1), .lit (.int 2), .lit (.int 3)]) "includes:" [.lit (.int 2)])
+    (.bool true)
+
+test "array includes: not found" := do
+  -- #(1 2 3) includes: 5 => false
+  shouldEvalTo
+    (.send (.array [.lit (.int 1), .lit (.int 2), .lit (.int 3)]) "includes:" [.lit (.int 5)])
+    (.bool false)
+
+-- Array indexOf: tests
+test "array indexOf: found" := do
+  -- #(10 20 30) indexOf: 20 => 2
+  shouldEvalTo
+    (.send (.array [.lit (.int 10), .lit (.int 20), .lit (.int 30)]) "indexOf:" [.lit (.int 20)])
+    (.int 2)
+
+test "array indexOf: not found" := do
+  -- #(10 20 30) indexOf: 50 => 0
+  shouldEvalTo
+    (.send (.array [.lit (.int 10), .lit (.int 20), .lit (.int 30)]) "indexOf:" [.lit (.int 50)])
+    (.int 0)
+
+-- String iteration tests
+test "string do: iterates characters" := do
+  -- | count | count := 0. 'abc' do: [:c | count := count + 1]. count => 3
+  let program := mkProgram [
+    .assign "count" (.lit (.int 0)),
+    .send (.lit (.str "abc")) "do:"
+      [.block ["c"] [] [.assign "count" (.send (.var "count") "+" [.lit (.int 1)])]],
+    .var "count"
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.int 3)) s!"expected 3, got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+test "string collect: transforms to array" := do
+  -- 'abc' collect: [:c | c asInteger] => #(97 98 99)
+  shouldEvalTo
+    (.send (.lit (.str "abc")) "collect:"
+      [.block ["c"] [] [.send (.var "c") "asInteger" []]])
+    (.array [.int 97, .int 98, .int 99])
+
+test "string collect: char to char returns string" := do
+  -- 'abc' collect: [:c | c asUppercase] => 'ABC'
+  shouldEvalTo
+    (.send (.lit (.str "abc")) "collect:"
+      [.block ["c"] [] [.send (.var "c") "asUppercase" []]])
+    (.str "ABC")
+
+test "string select: filters characters" := do
+  -- 'aAbBcC' select: [:c | c isLetter & (c asLowercase = c)] => 'abc'
+  -- Simplified: select vowels from 'aeiou123'
+  shouldEvalTo
+    (.send (.lit (.str "a1b2c3")) "select:"
+      [.block ["c"] [] [.send (.var "c") "isLetter" []]])
+    (.str "abc")
+
+test "string reject: filters out characters" := do
+  -- 'a1b2c3' reject: [:c | c isDigit] => 'abc'
+  shouldEvalTo
+    (.send (.lit (.str "a1b2c3")) "reject:"
+      [.block ["c"] [] [.send (.var "c") "isDigit" []]])
+    (.str "abc")
+
+test "string detect: finds first match" := do
+  -- 'abc123' detect: [:c | c isDigit] => $1
+  shouldEvalTo
+    (.send (.lit (.str "abc123")) "detect:"
+      [.block ["c"] [] [.send (.var "c") "isDigit" []]])
+    (.char '1')
+
+test "string detect:ifNone: not found" := do
+  -- 'abc' detect: [:c | c isDigit] ifNone: [$x] => $x
+  shouldEvalTo
+    (.send (.lit (.str "abc")) "detect:ifNone:"
+      [.block ["c"] [] [.send (.var "c") "isDigit" []], .block [] [] [.lit (.char 'x')]])
+    (.char 'x')
+
+test "string inject:into: concatenates" := do
+  -- 'abc' inject: '' into: [:acc :c | acc , c asString] would build string
+  -- Simpler: count characters
+  let program := mkProgram [
+    .send (.lit (.str "hello")) "inject:into:"
+      [.lit (.int 0), .block ["acc", "c"] [] [.send (.var "acc") "+" [.lit (.int 1)]]]
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.int 5)) s!"expected 5, got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+test "string includes: char found" := do
+  shouldEvalTo
+    (.send (.lit (.str "hello")) "includes:" [.lit (.char 'e')])
+    (.bool true)
+
+test "string includes: char not found" := do
+  shouldEvalTo
+    (.send (.lit (.str "hello")) "includes:" [.lit (.char 'x')])
+    (.bool false)
+
+test "string includes: substring found" := do
+  shouldEvalTo
+    (.send (.lit (.str "hello world")) "includes:" [.lit (.str "wor")])
+    (.bool true)
+
+test "string includes: substring not found" := do
+  shouldEvalTo
+    (.send (.lit (.str "hello")) "includes:" [.lit (.str "xyz")])
+    (.bool false)
+
+-- Dictionary iteration tests
+test "dict do: iterates values" := do
+  -- | sum | sum := 0. #{#a -> 1. #b -> 2. #c -> 3} do: [:v | sum := sum + v]. sum => 6
+  let program := mkProgram [
+    .assign "sum" (.lit (.int 0)),
+    .send (.lit (.dict [(.symbol "a", .int 1), (.symbol "b", .int 2), (.symbol "c", .int 3)])) "do:"
+      [.block ["v"] [] [.assign "sum" (.send (.var "sum") "+" [.var "v"])]],
+    .var "sum"
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.int 6)) s!"expected 6, got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+test "dict keysAndValuesDo: iterates pairs" := do
+  -- | result | result := ''. #{#a -> 1} keysAndValuesDo: [:k :v | ...]. result
+  let program := mkProgram [
+    .assign "keyCount" (.lit (.int 0)),
+    .assign "valueSum" (.lit (.int 0)),
+    .send (.lit (.dict [(.symbol "a", .int 10), (.symbol "b", .int 20)])) "keysAndValuesDo:"
+      [.block ["k", "v"] [] [
+        .assign "keyCount" (.send (.var "keyCount") "+" [.lit (.int 1)]),
+        .assign "valueSum" (.send (.var "valueSum") "+" [.var "v"])
+      ]],
+    .send (.var "keyCount") "+" [.var "valueSum"]
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.int 32)) s!"expected 32, got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+test "dict collect: transforms values" := do
+  -- #{#a -> 1. #b -> 2} collect: [:v | v * 2] => #(2 4)
+  shouldEvalTo
+    (.send (.lit (.dict [(.symbol "a", .int 1), (.symbol "b", .int 2)])) "collect:"
+      [.block ["v"] [] [.send (.var "v") "*" [.lit (.int 2)]]])
+    (.array [.int 2, .int 4])
+
+test "dict select: filters entries" := do
+  -- #{#a -> 1. #b -> 2. #c -> 3} select: [:v | v > 1] => #{#b -> 2. #c -> 3}
+  shouldEvalTo
+    (.send (.lit (.dict [(.symbol "a", .int 1), (.symbol "b", .int 2), (.symbol "c", .int 3)])) "select:"
+      [.block ["v"] [] [.send (.var "v") ">" [.lit (.int 1)]]])
+    (.dict [(.symbol "b", .int 2), (.symbol "c", .int 3)])
+
+test "dict reject: filters out entries" := do
+  -- #{#a -> 1. #b -> 2. #c -> 3} reject: [:v | v > 1] => #{#a -> 1}
+  shouldEvalTo
+    (.send (.lit (.dict [(.symbol "a", .int 1), (.symbol "b", .int 2), (.symbol "c", .int 3)])) "reject:"
+      [.block ["v"] [] [.send (.var "v") ">" [.lit (.int 1)]]])
+    (.dict [(.symbol "a", .int 1)])
+
+test "dict detect: finds first value" := do
+  -- #{#a -> 1. #b -> 2. #c -> 3} detect: [:v | v > 1] => 2
+  shouldEvalTo
+    (.send (.lit (.dict [(.symbol "a", .int 1), (.symbol "b", .int 2), (.symbol "c", .int 3)])) "detect:"
+      [.block ["v"] [] [.send (.var "v") ">" [.lit (.int 1)]]])
+    (.int 2)
+
+test "dict detect:ifNone: not found" := do
+  shouldEvalTo
+    (.send (.lit (.dict [(.symbol "a", .int 1)])) "detect:ifNone:"
+      [.block ["v"] [] [.send (.var "v") ">" [.lit (.int 10)]], .block [] [] [.lit (.int 99)]])
+    (.int 99)
+
+test "dict inject:into: accumulates values" := do
+  -- #{#a -> 1. #b -> 2. #c -> 3} inject: 0 into: [:sum :v | sum + v] => 6
+  shouldEvalTo
+    (.send (.lit (.dict [(.symbol "a", .int 1), (.symbol "b", .int 2), (.symbol "c", .int 3)]))
+      "inject:into:" [.lit (.int 0), .block ["sum", "v"] [] [.send (.var "sum") "+" [.var "v"]]])
+    (.int 6)
+
+-- Error handling tests for iteration
+test "array select: non-boolean error" := do
+  shouldEvalError
+    (.send (.array [.lit (.int 1)]) "select:" [.block ["x"] [] [.var "x"]])
+    "must return Boolean"
+
+test "array reject: non-boolean error" := do
+  shouldEvalError
+    (.send (.array [.lit (.int 1)]) "reject:" [.block ["x"] [] [.var "x"]])
+    "must return Boolean"
+
+test "array detect: non-boolean error" := do
+  shouldEvalError
+    (.send (.array [.lit (.int 1)]) "detect:" [.block ["x"] [] [.var "x"]])
+    "must return Boolean"
+
 end EvalTests
