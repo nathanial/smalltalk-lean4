@@ -12,6 +12,9 @@ def String.containsSubstr (s : String) (sub : String) : Bool :=
 structure EvalError where
   message : String
   returnValue : Option Value := none  -- Non-local return value (if set, not a real error)
+  exceptionValue : Option Value := none  -- Exception being signaled
+  -- Env from cleanup blocks (ensure:/ifCurtailed:) - allows side effects to propagate
+  cleanupEnv : Option Env := none
   deriving Repr, Inhabited
 
 /-- Interpreter state carrying the current environment. -/
@@ -48,6 +51,26 @@ partial def lookupMethod (registry : ClassRegistry) (className : Symbol) (select
           match classDef.super with
           | none => none
           | some superName => lookupMethod registry superName selector
+
+/-- Check if a class inherits from Exception -/
+partial def isExceptionClass (registry : ClassRegistry) (className : Symbol) : Bool :=
+  if className == "Exception" then true
+  else match registryLookup registry className with
+    | none => false
+    | some classDef =>
+        match classDef.super with
+        | none => false
+        | some superName => isExceptionClass registry superName
+
+/-- Check if exception matches handler class (includes subclasses) -/
+partial def exceptionMatches (registry : ClassRegistry) (exClass : Symbol) (handlerClass : Symbol) : Bool :=
+  if exClass == handlerClass then true
+  else match registryLookup registry exClass with
+    | none => false
+    | some classDef =>
+        match classDef.super with
+        | none => false
+        | some superName => exceptionMatches registry superName handlerClass
 
 mutual
   /-- Evaluate a method call on an object. -/
@@ -134,6 +157,18 @@ mutual
         | "whileFalse" =>
             -- [condition] whileFalse evaluates until condition is true
             evalWhileFalse state recvVal recvVal
+        | "on:do:" =>
+            match argVals with
+            | [.symbol exClass, handlerBlock] => evalOnDo state recvVal exClass handlerBlock
+            | _ => .error { message := "on:do: expects exception class symbol and handler block" }
+        | "ensure:" =>
+            match argVals with
+            | [ensureBlock] => evalEnsure state recvVal ensureBlock
+            | _ => .error { message := "ensure: expects exactly 1 block" }
+        | "ifCurtailed:" =>
+            match argVals with
+            | [curtailedBlock] => evalIfCurtailed state recvVal curtailedBlock
+            | _ => .error { message := "ifCurtailed: expects exactly 1 block" }
         | _ => .error { message := s!"Block does not understand: {sel}" }
     | _ =>
     -- Handle boolean control flow messages
@@ -282,7 +317,38 @@ mutual
         match argVals with
         | [initial, blockVal] => evalDictInject state entries initial blockVal
         | _ => .error { message := "inject:into: expects exactly 2 arguments" }
+    -- Exception signaling: ExceptionClass signal: 'message'
+    | .symbol className, "signal:" =>
+        match argVals with
+        | [.str msg] =>
+            if isExceptionClass state.classes className then
+              let ex := Value.object className [("messageText", .str msg)]
+              .error { message := "", exceptionValue := some ex }
+            else
+              .error { message := s!"{className} is not an exception class" }
+        | _ => .error { message := "signal: expects a string message" }
+    -- Exception signaling: anException signal
+    | .object className fields, "signal" =>
+        if isExceptionClass state.classes className then
+          .error { message := "", exceptionValue := some recvVal }
+        else
+          -- Fall through to method lookup (handled below)
+          evalSendToValueFallback state recvVal sel argVals recvVarName
+    -- Exception messageText accessor
+    | .object className fields, "messageText" =>
+        if isExceptionClass state.classes className then
+          match fields.find? (fun (n, _) => n == "messageText") with
+          | some (_, v) => .ok (state, v)
+          | none => .ok (state, .nil)
+        else
+          evalSendToValueFallback state recvVal sel argVals recvVarName
     | _, _ =>
+        evalSendToValueFallback state recvVal sel argVals recvVarName
+
+  /-- Fallback method dispatch for non-exception-specific messages. -/
+  partial def evalSendToValueFallback (state : ExecState) (recvVal : Value) (sel : Symbol)
+      (argVals : List Value) (recvVarName : Option Symbol)
+      : Except EvalError (ExecState × Value) := do
     -- Get the class name for this value (works for both objects and built-in types)
     let className := match recvVal with
       | .object cn _ => cn
@@ -428,6 +494,73 @@ mutual
     else
       let (state', _) ← evalBlockValue state blockVal [.int start]
       evalToDo state' (start + 1) stop blockVal
+
+  /-- Evaluate [protected] on: ExceptionClass do: [:ex | handler] -/
+  partial def evalOnDo (state : ExecState) (protectedBlock : Value)
+      (exClass : Symbol) (handlerBlock : Value) : Except EvalError (ExecState × Value) := do
+    match evalBlockValue state protectedBlock [] with
+    | .ok result => .ok result  -- No exception, return normally
+    | .error e =>
+        match e.exceptionValue with
+        | some exVal =>
+            -- Check if exception matches handler class
+            let exClassName := match exVal with
+              | .object cn _ => cn
+              | _ => ""
+            if exceptionMatches state.classes exClassName exClass then
+              -- Handler catches this exception
+              -- Use cleanupEnv if present (from ensure:/ifCurtailed: blocks)
+              let handlerState := match e.cleanupEnv with
+                | some env => { state with env := env }
+                | none => state
+              evalBlockValue handlerState handlerBlock [exVal]
+            else
+              -- Exception doesn't match, propagate
+              .error e
+        | none =>
+            -- Not an exception (could be non-local return or real error)
+            .error e
+
+  /-- Evaluate [protected] ensure: [cleanup] -/
+  partial def evalEnsure (state : ExecState) (protectedBlock : Value)
+      (ensureBlock : Value) : Except EvalError (ExecState × Value) := do
+    -- Always run cleanup, regardless of outcome
+    match evalBlockValue state protectedBlock [] with
+    | .ok (state', result) =>
+        -- Success: run cleanup, return original result
+        match evalBlockValue state' ensureBlock [] with
+        | .ok (state'', _) => .ok (state'', result)
+        | .error cleanupError => .error cleanupError  -- Cleanup error takes precedence
+    | .error e =>
+        -- Exception or return: run cleanup, then re-raise
+        -- Use cleanupEnv from e if present (for nested ensure:/ifCurtailed:)
+        let cleanupState := match e.cleanupEnv with
+          | some env => { state with env := env }
+          | none => state
+        match evalBlockValue cleanupState ensureBlock [] with
+        | .ok (state', _) =>
+            -- Re-raise original error, but preserve cleanup env
+            .error { e with cleanupEnv := some state'.env }
+        | .error cleanupError =>
+            -- Cleanup error takes precedence
+            .error cleanupError
+
+  /-- Evaluate [protected] ifCurtailed: [cleanup] -/
+  partial def evalIfCurtailed (state : ExecState) (protectedBlock : Value)
+      (curtailedBlock : Value) : Except EvalError (ExecState × Value) := do
+    match evalBlockValue state protectedBlock [] with
+    | .ok result => .ok result  -- Success: don't run cleanup
+    | .error e =>
+        -- Exception or non-local return: run cleanup, then re-raise
+        -- Use cleanupEnv from e if present (for nested ensure:/ifCurtailed:)
+        let cleanupState := match e.cleanupEnv with
+          | some env => { state with env := env }
+          | none => state
+        match evalBlockValue cleanupState curtailedBlock [] with
+        | .ok (state', _) =>
+            -- Re-raise original error, but preserve cleanup env
+            .error { e with cleanupEnv := some state'.env }
+        | .error cleanupError => .error cleanupError
 
   /-- Array do: - evaluate block for each element, return nil -/
   partial def evalArrayDo (state : ExecState) (elems : List Value) (blockVal : Value)
@@ -845,7 +978,11 @@ def coreClasses : List ClassDef := [
   { name := "False", super := some "Boolean", ivars := [], methods := [] },
   { name := "Array", super := some "Object", ivars := [], methods := [] },
   { name := "Dictionary", super := some "Object", ivars := [], methods := [] },
-  { name := "Block", super := some "Object", ivars := [], methods := [] }
+  { name := "Block", super := some "Object", ivars := [], methods := [] },
+  -- Exception hierarchy
+  { name := "Exception", super := some "Object", ivars := ["messageText"], methods := [] },
+  { name := "Error", super := some "Exception", ivars := [], methods := [] },
+  { name := "Warning", super := some "Exception", ivars := [], methods := [] }
 ]
 
 /-- Get the class name for a runtime value. -/

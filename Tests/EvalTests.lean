@@ -1555,4 +1555,203 @@ test "array detect: non-boolean error" := do
     (.send (.array [.lit (.int 1)]) "detect:" [.block ["x"] [] [.var "x"]])
     "must return Boolean"
 
+-- ============ Exception Handling Tests ============
+
+-- Basic signal and catch
+test "on:do: catches matching exception" := do
+  -- [[Error signal: 'oops'] on: #Error do: [:ex | #caught]] => #caught
+  let program := mkProgram [
+    .send
+      (.block [] [] [.send (.var "Error") "signal:" [.lit (.str "oops")]])
+      "on:do:"
+      [.lit (.symbol "Error"), .block ["ex"] [] [.lit (.symbol "caught")]]
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.symbol "caught")) s!"expected #caught, got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+test "on:do: propagates non-matching exception" := do
+  -- [[Error signal: 'oops'] on: #Warning do: [:ex | #caught]] => error (unhandled)
+  let program := mkProgram [
+    .send
+      (.block [] [] [.send (.var "Error") "signal:" [.lit (.str "oops")]])
+      "on:do:"
+      [.lit (.symbol "Warning"), .block ["ex"] [] [.lit (.symbol "caught")]]
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => throw (IO.userError s!"expected unhandled exception, got {reprStr v}")
+  | .error _ => pure ()  -- Expected - exception propagates
+
+test "on:do: catches subclass exceptions" := do
+  -- [[Error signal: 'oops'] on: #Exception do: [:ex | #caught]] => #caught
+  let program := mkProgram [
+    .send
+      (.block [] [] [.send (.var "Error") "signal:" [.lit (.str "oops")]])
+      "on:do:"
+      [.lit (.symbol "Exception"), .block ["ex"] [] [.lit (.symbol "caught")]]
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.symbol "caught")) s!"expected #caught, got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+test "on:do: no exception returns normally" := do
+  -- [[42] on: #Error do: [:ex | 0]] => 42
+  shouldEvalTo
+    (.send
+      (.block [] [] [.lit (.int 42)])
+      "on:do:"
+      [.lit (.symbol "Error"), .block ["ex"] [] [.lit (.int 0)]])
+    (.int 42)
+
+-- Ensure always runs
+test "ensure: runs on success" := do
+  -- | ran | ran := false. [[42] ensure: [ran := true]]. ran => true
+  let program := mkProgram [
+    .assign "ran" (.lit (.bool false)),
+    .send
+      (.block [] [] [.lit (.int 42)])
+      "ensure:"
+      [.block [] [] [.assign "ran" (.lit (.bool true))]],
+    .var "ran"
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.bool true)) s!"expected true, got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+test "ensure: runs on exception" := do
+  -- | ran | ran := false. [[[Error signal: 'x'] ensure: [ran := true]] on: #Error do: [:e | nil]]. ran => true
+  let program := mkProgram [
+    .assign "ran" (.lit (.bool false)),
+    .send
+      (.block [] [] [
+        .send
+          (.block [] [] [.send (.var "Error") "signal:" [.lit (.str "x")]])
+          "ensure:"
+          [.block [] [] [.assign "ran" (.lit (.bool true))]]
+      ])
+      "on:do:"
+      [.lit (.symbol "Error"), .block ["e"] [] [.lit .nil]],
+    .var "ran"
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.bool true)) s!"expected true, got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+test "ensure: returns original result" := do
+  -- [[42] ensure: [99]] => 42 (ensure result is discarded)
+  shouldEvalTo
+    (.send
+      (.block [] [] [.lit (.int 42)])
+      "ensure:"
+      [.block [] [] [.lit (.int 99)]])
+    (.int 42)
+
+-- ifCurtailed only runs on exception
+test "ifCurtailed: does not run on success" := do
+  -- | ran | ran := false. [[42] ifCurtailed: [ran := true]]. ran => false
+  let program := mkProgram [
+    .assign "ran" (.lit (.bool false)),
+    .send
+      (.block [] [] [.lit (.int 42)])
+      "ifCurtailed:"
+      [.block [] [] [.assign "ran" (.lit (.bool true))]],
+    .var "ran"
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.bool false)) s!"expected false, got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+test "ifCurtailed: runs on exception" := do
+  -- | ran | ran := false. [[[Error signal: 'x'] ifCurtailed: [ran := true]] on: #Error do: [:e | nil]]. ran => true
+  let program := mkProgram [
+    .assign "ran" (.lit (.bool false)),
+    .send
+      (.block [] [] [
+        .send
+          (.block [] [] [.send (.var "Error") "signal:" [.lit (.str "x")]])
+          "ifCurtailed:"
+          [.block [] [] [.assign "ran" (.lit (.bool true))]]
+      ])
+      "on:do:"
+      [.lit (.symbol "Error"), .block ["e"] [] [.lit .nil]],
+    .var "ran"
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.bool true)) s!"expected true, got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+-- Handler receives exception object
+test "on:do: handler receives exception with messageText" := do
+  -- [[Error signal: 'hello'] on: #Error do: [:ex | ex messageText]] => 'hello'
+  let program := mkProgram [
+    .send
+      (.block [] [] [.send (.var "Error") "signal:" [.lit (.str "hello")]])
+      "on:do:"
+      [.lit (.symbol "Error"), .block ["ex"] [] [.send (.var "ex") "messageText" []]]
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.str "hello")) s!"expected 'hello', got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+-- Signal without message
+test "exception object signal works" := do
+  -- | ex | ex := Error new. [[ex signal] on: #Error do: [:e | #caught]] => #caught
+  let program := mkProgram [
+    .assign "ex" (.send (.var "Error") "new" []),
+    .send
+      (.block [] [] [.send (.var "ex") "signal" []])
+      "on:do:"
+      [.lit (.symbol "Error"), .block ["e"] [] [.lit (.symbol "caught")]]
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.symbol "caught")) s!"expected #caught, got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+-- Nested exception handling
+test "nested on:do: handlers" := do
+  -- [[[Error signal: 'x'] on: #Warning do: [:e | 1]] on: #Error do: [:e | 2]] => 2
+  let program := mkProgram [
+    .send
+      (.block [] [] [
+        .send
+          (.block [] [] [.send (.var "Error") "signal:" [.lit (.str "x")]])
+          "on:do:"
+          [.lit (.symbol "Warning"), .block ["e"] [] [.lit (.int 1)]]
+      ])
+      "on:do:"
+      [.lit (.symbol "Error"), .block ["e"] [] [.lit (.int 2)]]
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.int 2)) s!"expected 2, got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+-- Warning exception class
+test "Warning is an exception class" := do
+  let program := mkProgram [
+    .send
+      (.block [] [] [.send (.var "Warning") "signal:" [.lit (.str "caution")]])
+      "on:do:"
+      [.lit (.symbol "Warning"), .block ["ex"] [] [.send (.var "ex") "messageText" []]]
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.str "caution")) s!"expected 'caution', got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+-- Non-exception class signal: should error
+test "signal: on non-exception class errors" := do
+  shouldEvalError
+    (.send (.var "Object") "signal:" [.lit (.str "test")])
+    "is not an exception class"
+
+-- Unhandled exception propagates
+test "unhandled exception propagates" := do
+  let program := mkProgram [
+    .send (.var "Error") "signal:" [.lit (.str "unhandled")]
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => throw (IO.userError s!"expected unhandled exception, got {reprStr v}")
+  | .error e =>
+      -- Should have an exception value
+      shouldSatisfy e.exceptionValue.isSome "expected exception value to be set"
+
 end EvalTests
