@@ -5,11 +5,16 @@ namespace Smalltalk
 /-- Runtime values used by the interpreter. -/
 inductive Value
   | int (value : Int)
+  | float (value : Float)
   | str (value : String)
+  | char (value : Char)
+  | symbol (value : Symbol)
   | bool (value : Bool)
   | nil
+  | array (elements : List Value)
+  | dict (entries : List (Value × Value))
   | object (className : Symbol) (fields : List (Symbol × Value))
-  deriving Repr
+  deriving Repr, Inhabited
 
 /-- Variable environment. -/
 abbrev Env := List (Symbol × Value)
