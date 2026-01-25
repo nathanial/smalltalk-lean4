@@ -1,5 +1,6 @@
 import Smalltalk.AST
 import Smalltalk.Runtime
+import Smalltalk.Primitives
 
 namespace Smalltalk
 
@@ -62,7 +63,12 @@ mutual
     | .array elems => do
         let (state', values) ← evalExprs state elems
         .ok (state', .array values)
-    | .send _ _ _ => .error { message := "Message sends not yet implemented" }
+    | .send recvExpr sel argsExpr => do
+        let (state', recvVal) ← evalExpr state recvExpr
+        let (state'', argVals) ← evalExprs state' argsExpr
+        match evalPrimitive recvVal sel argVals with
+        | .ok v => .ok (state'', v)
+        | .error e => .error { message := e.message }
     | .block _ _ _ => .error { message := "Blocks not yet implemented" }
     | .return _ => .error { message := "Return not yet implemented" }
     | .cascade _ _ => .error { message := "Cascades not yet implemented" }

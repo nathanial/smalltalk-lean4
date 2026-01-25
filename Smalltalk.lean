@@ -4,6 +4,7 @@
 import Smalltalk.AST
 import Smalltalk.Runtime
 import Smalltalk.Parse
+import Smalltalk.Primitives
 import Smalltalk.Eval
 
 namespace Smalltalk
