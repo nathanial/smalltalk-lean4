@@ -22,6 +22,7 @@ def typeNameOf : Value → String
   | .array _ => "Array"
   | .dict _ => "Dictionary"
   | .object className _ => className
+  | .block _ _ _ _ _ => "Block"
 
 /-- Convert Float to Int by truncating towards zero. -/
 def floatToInt (f : Float) : Int :=
@@ -42,6 +43,7 @@ partial def valueIdentical : Value → Value → Bool
   | .array a, .array b => a.length == b.length && (a.zip b).all fun (x, y) => valueIdentical x y
   | .dict a, .dict b => a.length == b.length
   | .object n1 _, .object n2 _ => n1 == n2  -- simplified: real identity would need object IDs
+  | .block _ _ _ _ _, .block _ _ _ _ _ => false  -- blocks are never identical (would need object IDs)
   | _, _ => false
 
 /-- Evaluate integer primitives. -/
@@ -358,5 +360,6 @@ def evalPrimitive (recv : Value) (sel : Symbol) (args : List Value)
   | .array elems => evalArrayPrimitive elems sel args
   | .dict entries => evalDictPrimitive entries sel args
   | .object _ _ => .error { message := s!"No primitive '{sel}' for {typeNameOf recv}" }
+  | .block _ _ _ _ _ => .error { message := s!"No primitive '{sel}' for Block" }
 
 end Smalltalk

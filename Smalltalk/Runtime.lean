@@ -14,6 +14,8 @@ inductive Value
   | array (elements : List Value)
   | dict (entries : List (Value × Value))
   | object (className : Symbol) (fields : List (Symbol × Value))
+  | block (params : List Symbol) (temps : List Symbol) (body : List Expr)
+          (capturedEnv : List (Symbol × Value)) (capturedSelf : Option Value)
   deriving Repr, Inhabited
 
 /-- Variable environment. -/

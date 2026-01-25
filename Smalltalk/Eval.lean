@@ -7,7 +7,8 @@ namespace Smalltalk
 /-- Evaluation errors for the interpreter. -/
 structure EvalError where
   message : String
-  deriving Repr, BEq, Inhabited
+  returnValue : Option Value := none  -- Non-local return value (if set, not a real error)
+  deriving Repr, Inhabited
 
 /-- Interpreter state carrying the current environment. -/
 structure ExecState where
@@ -63,7 +64,15 @@ mutual
       | .ok (finalState, result) =>
           -- Return state with modified object in self field (caller may need to update variable)
           .ok ({ state with self := finalState.self, classes := finalState.classes }, result)
-      | .error e => .error e
+      | .error e =>
+          -- Catch non-local returns at method boundary
+          match e.returnValue with
+          | some v =>
+              -- Non-local return - return the value from the method
+              .ok ({ state with classes := methodState.classes }, v)
+          | none =>
+              -- Real error - propagate it
+              .error e
 
   /-- Evaluate a message send, optionally updating a receiver variable after method call. -/
   partial def evalSend (state : ExecState) (recvVal : Value) (sel : Symbol) (argVals : List Value)
@@ -88,6 +97,81 @@ mutual
   /-- Dispatch message to a value (object or primitive). -/
   partial def evalSendToValue (state : ExecState) (recvVal : Value) (sel : Symbol) (argVals : List Value)
       (recvVarName : Option Symbol) : Except EvalError (ExecState × Value) := do
+    -- Handle block-specific messages first
+    match recvVal with
+    | .block _ _ _ _ _ =>
+        match sel with
+        | "value" =>
+            if argVals.isEmpty then evalBlockValue state recvVal []
+            else .error { message := "value takes no arguments" }
+        | "value:" =>
+            match argVals with
+            | [arg] => evalBlockValue state recvVal [arg]
+            | _ => .error { message := "value: expects exactly 1 argument" }
+        | "value:value:" =>
+            match argVals with
+            | [a1, a2] => evalBlockValue state recvVal [a1, a2]
+            | _ => .error { message := "value:value: expects exactly 2 arguments" }
+        | "value:value:value:" =>
+            match argVals with
+            | [a1, a2, a3] => evalBlockValue state recvVal [a1, a2, a3]
+            | _ => .error { message := "value:value:value: expects exactly 3 arguments" }
+        | "whileTrue:" =>
+            match argVals with
+            | [bodyBlock] => evalWhileTrue state recvVal bodyBlock
+            | _ => .error { message := "whileTrue: expects exactly 1 argument" }
+        | "whileFalse:" =>
+            match argVals with
+            | [bodyBlock] => evalWhileFalse state recvVal bodyBlock
+            | _ => .error { message := "whileFalse: expects exactly 1 argument" }
+        | "whileTrue" =>
+            -- [condition] whileTrue evaluates until condition is false
+            evalWhileTrue state recvVal recvVal
+        | "whileFalse" =>
+            -- [condition] whileFalse evaluates until condition is true
+            evalWhileFalse state recvVal recvVal
+        | _ => .error { message := s!"Block does not understand: {sel}" }
+    | _ =>
+    -- Handle boolean control flow messages
+    match recvVal, sel with
+    | .bool b, "ifTrue:" =>
+        match argVals with
+        | [trueBlock] =>
+            if b then evalBlockValue state trueBlock []
+            else .ok (state, .nil)
+        | _ => .error { message := "ifTrue: expects exactly 1 argument" }
+    | .bool b, "ifFalse:" =>
+        match argVals with
+        | [falseBlock] =>
+            if b then .ok (state, .nil)
+            else evalBlockValue state falseBlock []
+        | _ => .error { message := "ifFalse: expects exactly 1 argument" }
+    | .bool b, "ifTrue:ifFalse:" =>
+        match argVals with
+        | [trueBlock, falseBlock] =>
+            if b then evalBlockValue state trueBlock []
+            else evalBlockValue state falseBlock []
+        | _ => .error { message := "ifTrue:ifFalse: expects exactly 2 arguments" }
+    | .bool b, "ifFalse:ifTrue:" =>
+        match argVals with
+        | [falseBlock, trueBlock] =>
+            if b then evalBlockValue state trueBlock []
+            else evalBlockValue state falseBlock []
+        | _ => .error { message := "ifFalse:ifTrue: expects exactly 2 arguments" }
+    -- Handle integer timesRepeat:
+    | .int n, "timesRepeat:" =>
+        match argVals with
+        | [blockVal] =>
+            if n <= 0 then .ok (state, .nil)
+            else evalTimesRepeat state n.toNat blockVal
+        | _ => .error { message := "timesRepeat: expects exactly 1 argument" }
+    | .int n, "to:do:" =>
+        -- n to: m do: [:i | body] - evaluates block with i from n to m
+        match argVals with
+        | [.int m, blockVal] =>
+            evalToDo state n m blockVal
+        | _ => .error { message := "to:do: expects an integer and a block" }
+    | _, _ =>
     -- Get the class name for this value (works for both objects and built-in types)
     let className := match recvVal with
       | .object cn _ => cn
@@ -101,6 +185,7 @@ mutual
       | .nil => "UndefinedObject"
       | .array _ => "Array"
       | .dict _ => "Dictionary"
+      | .block _ _ _ _ _ => "Block"
     -- Try method lookup first (allows user-defined methods on built-in types)
     match lookupMethod state.classes className sel with
     | some (defClass, method) =>
@@ -155,6 +240,83 @@ mutual
         let (state', v) ← evalExpr state e
         let (state'', vs) ← evalExprs state' rest
         .ok (state'', v :: vs)
+
+  /-- Merge environment changes from block execution back to outer scope.
+      Variables that were modified inside the block (and exist in outer env) get updated. -/
+  partial def mergeBlockEnvChanges (outerEnv : Env) (blockEnv : Env) (params : List Symbol) (temps : List Symbol) : Env :=
+    -- For each binding in outerEnv, check if it was modified in blockEnv
+    outerEnv.map fun (name, oldVal) =>
+      -- Skip params and temps - they're block-local
+      if params.contains name || temps.contains name then
+        (name, oldVal)
+      else
+        -- Look for updated value in blockEnv
+        match envLookup blockEnv name with
+        | some newVal => (name, newVal)
+        | none => (name, oldVal)
+
+  /-- Evaluate a block with the given arguments. -/
+  partial def evalBlockValue (state : ExecState) (blockVal : Value) (args : List Value)
+      : Except EvalError (ExecState × Value) := do
+    match blockVal with
+    | .block params temps body capturedEnv capturedSelf =>
+        if params.length != args.length then
+          .error { message := s!"Block expects {params.length} arguments, got {args.length}" }
+        else
+          let paramBindings := params.zip args
+          let tempBindings := temps.map (fun t => (t, Value.nil))
+          -- Block env = params + temps + CURRENT outer env (not just captured)
+          -- This allows blocks to see updates made by previous block evaluations
+          let blockEnv := paramBindings ++ tempBindings ++ state.env
+          let blockState := { state with env := blockEnv, self := capturedSelf.orElse (fun _ => state.self) }
+          -- Evaluate block body, propagating non-local returns
+          match evalSeq blockState body with
+          | .ok (finalState, result) =>
+              -- Merge env changes back to caller (excluding params/temps which are block-local)
+              let mergedEnv := mergeBlockEnvChanges state.env finalState.env params temps
+              .ok ({ state with env := mergedEnv, classes := finalState.classes }, result)
+          | .error e =>
+              -- Propagate returns up (they'll be caught by evalMethodCall)
+              .error e
+    | _ => .error { message := "value sent to non-block" }
+
+  /-- Evaluate whileTrue: loop - receiver block is condition, arg is body. -/
+  partial def evalWhileTrue (state : ExecState) (condBlock : Value) (bodyBlock : Value)
+      : Except EvalError (ExecState × Value) := do
+    match ← evalBlockValue state condBlock [] with
+    | (state', .bool true) =>
+        match ← evalBlockValue state' bodyBlock [] with
+        | (state'', _) => evalWhileTrue state'' condBlock bodyBlock
+    | (state', .bool false) => .ok (state', .nil)
+    | (_, other) => .error { message := s!"whileTrue: condition must return Boolean, got {reprStr other}" }
+
+  /-- Evaluate whileFalse: loop - receiver block is condition, arg is body. -/
+  partial def evalWhileFalse (state : ExecState) (condBlock : Value) (bodyBlock : Value)
+      : Except EvalError (ExecState × Value) := do
+    match ← evalBlockValue state condBlock [] with
+    | (state', .bool false) =>
+        match ← evalBlockValue state' bodyBlock [] with
+        | (state'', _) => evalWhileFalse state'' condBlock bodyBlock
+    | (state', .bool true) => .ok (state', .nil)
+    | (_, other) => .error { message := s!"whileFalse: condition must return Boolean, got {reprStr other}" }
+
+  /-- Evaluate timesRepeat: - evaluates block n times. -/
+  partial def evalTimesRepeat (state : ExecState) (n : Nat) (blockVal : Value)
+      : Except EvalError (ExecState × Value) := do
+    if n == 0 then
+      .ok (state, .nil)
+    else
+      let (state', _) ← evalBlockValue state blockVal []
+      evalTimesRepeat state' (n - 1) blockVal
+
+  /-- Evaluate to:do: - evaluates block with index from start to end. -/
+  partial def evalToDo (state : ExecState) (start : Int) (stop : Int) (blockVal : Value)
+      : Except EvalError (ExecState × Value) := do
+    if start > stop then
+      .ok (state, .nil)
+    else
+      let (state', _) ← evalBlockValue state blockVal [.int start]
+      evalToDo state' (start + 1) stop blockVal
 
   /-- Evaluate a single expression. -/
   partial def evalExpr (state : ExecState) (expr : Expr) : Except EvalError (ExecState × Value) :=
@@ -245,8 +407,13 @@ mutual
         let (state', recvVal) ← evalExpr state recvExpr
         let (state'', argVals) ← evalExprs state' argsExpr
         evalSend state'' recvVal sel argVals none
-    | .block _ _ _ => .error { message := "Blocks not yet implemented" }
-    | .return _ => .error { message := "Return not yet implemented" }
+    | .block params temps body =>
+        -- Capture current environment and self at block creation time
+        .ok (state, .block params temps body state.env state.self)
+    | .return valueExpr => do
+        -- Evaluate the return expression and signal non-local return
+        let (_, value) ← evalExpr state valueExpr
+        .error { message := "__return__", returnValue := some value }
     | .cascade recvExpr chains => do
         -- Evaluate receiver once
         let (state', recvVal) ← evalExpr state recvExpr
@@ -289,7 +456,8 @@ def coreClasses : List ClassDef := [
   { name := "True", super := some "Boolean", ivars := [], methods := [] },
   { name := "False", super := some "Boolean", ivars := [], methods := [] },
   { name := "Array", super := some "Object", ivars := [], methods := [] },
-  { name := "Dictionary", super := some "Object", ivars := [], methods := [] }
+  { name := "Dictionary", super := some "Object", ivars := [], methods := [] },
+  { name := "Block", super := some "Object", ivars := [], methods := [] }
 ]
 
 /-- Get the class name for a runtime value. -/
@@ -305,6 +473,7 @@ def classNameOf : Value → Symbol
   | .array _ => "Array"
   | .dict _ => "Dictionary"
   | .object cn _ => cn
+  | .block _ _ _ _ _ => "Block"
 
 /-- Evaluate a whole program. -/
 def evalProgram (program : Program) : Except EvalError Value :=

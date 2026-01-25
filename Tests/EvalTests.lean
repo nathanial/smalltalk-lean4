@@ -39,6 +39,10 @@ def shouldEvalError (expr : Expr) (substring : String) : IO Unit := do
       shouldSatisfy (e.message.containsSubstr substring)
         s!"expected error containing '{substring}', got: {e.message}"
 
+-- Helper to create a program with class definitions
+def mkProgramWithClasses (classes : List ClassDef) (exprs : List Expr) : Program :=
+  { classes := classes, main := exprs }
+
 -- ============ Literal Tests ============
 
 test "eval int literal" := do
@@ -597,13 +601,229 @@ test "expression with variable" := do
   | .error e =>
       throw (IO.userError s!"unexpected error: {e.message}")
 
--- ============ Not Yet Implemented Tests ============
+-- ============ Block and Closure Tests ============
 
-test "eval block returns error" := do
-  shouldEvalError (.block [] [] [.lit (.int 1)]) "Blocks not yet implemented"
+test "block with no params value" := do
+  -- [5] value => 5
+  shouldEvalTo (.send (.block [] [] [.lit (.int 5)]) "value" []) (.int 5)
 
-test "eval return returns error" := do
-  shouldEvalError (.return (.lit (.int 1))) "Return not yet implemented"
+test "block with one param" := do
+  -- [:x | x + 1] value: 5 => 6
+  let block := Expr.block ["x"] [] [.send (.var "x") "+" [.lit (.int 1)]]
+  shouldEvalTo (.send block "value:" [.lit (.int 5)]) (.int 6)
+
+test "block with two params" := do
+  -- [:x :y | x + y] value: 3 value: 4 => 7
+  let block := Expr.block ["x", "y"] [] [.send (.var "x") "+" [.var "y"]]
+  shouldEvalTo (.send block "value:value:" [.lit (.int 3), .lit (.int 4)]) (.int 7)
+
+test "block with temps" := do
+  -- [| t | t := 10. t + 5] value => 15
+  let block := Expr.block [] ["t"] [.assign "t" (.lit (.int 10)), .send (.var "t") "+" [.lit (.int 5)]]
+  shouldEvalTo (.send block "value" []) (.int 15)
+
+test "block captures environment" := do
+  -- y := 10. [:x | x + y] value: 5 => 15
+  let program := mkProgram [
+    .assign "y" (.lit (.int 10)),
+    .send (.block ["x"] [] [.send (.var "x") "+" [.var "y"]]) "value:" [.lit (.int 5)]
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.int 15)) s!"expected 15, got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+test "block wrong arity error" := do
+  -- [5] value: 1 => error
+  shouldEvalError (.send (.block [] [] [.lit (.int 5)]) "value:" [.lit (.int 1)])
+    "Block expects 0 arguments"
+
+-- ============ Boolean Control Flow Tests ============
+
+test "ifTrue: executes when true" := do
+  -- true ifTrue: [42] => 42
+  shouldEvalTo
+    (.send (.lit (.bool true)) "ifTrue:" [.block [] [] [.lit (.int 42)]])
+    (.int 42)
+
+test "ifTrue: returns nil when false" := do
+  -- false ifTrue: [42] => nil
+  shouldEvalTo
+    (.send (.lit (.bool false)) "ifTrue:" [.block [] [] [.lit (.int 42)]])
+    .nil
+
+test "ifFalse: executes when false" := do
+  -- false ifFalse: [42] => 42
+  shouldEvalTo
+    (.send (.lit (.bool false)) "ifFalse:" [.block [] [] [.lit (.int 42)]])
+    (.int 42)
+
+test "ifFalse: returns nil when true" := do
+  -- true ifFalse: [42] => nil
+  shouldEvalTo
+    (.send (.lit (.bool true)) "ifFalse:" [.block [] [] [.lit (.int 42)]])
+    .nil
+
+test "ifTrue:ifFalse: true branch" := do
+  -- true ifTrue: [1] ifFalse: [2] => 1
+  shouldEvalTo
+    (.send (.lit (.bool true)) "ifTrue:ifFalse:"
+      [.block [] [] [.lit (.int 1)], .block [] [] [.lit (.int 2)]])
+    (.int 1)
+
+test "ifTrue:ifFalse: false branch" := do
+  -- false ifTrue: [1] ifFalse: [2] => 2
+  shouldEvalTo
+    (.send (.lit (.bool false)) "ifTrue:ifFalse:"
+      [.block [] [] [.lit (.int 1)], .block [] [] [.lit (.int 2)]])
+    (.int 2)
+
+test "ifFalse:ifTrue: true branch" := do
+  -- true ifFalse: [1] ifTrue: [2] => 2
+  shouldEvalTo
+    (.send (.lit (.bool true)) "ifFalse:ifTrue:"
+      [.block [] [] [.lit (.int 1)], .block [] [] [.lit (.int 2)]])
+    (.int 2)
+
+-- ============ Loop Tests ============
+
+test "timesRepeat: basic" := do
+  -- | i | i := 0. 5 timesRepeat: [i := i + 1]. i => 5
+  let program := mkProgram [
+    .assign "i" (.lit (.int 0)),
+    .send (.lit (.int 5)) "timesRepeat:" [.block [] [] [.assign "i" (.send (.var "i") "+" [.lit (.int 1)])]],
+    .var "i"
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.int 5)) s!"expected 5, got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+test "timesRepeat: zero times" := do
+  -- 0 timesRepeat: [x] => nil
+  shouldEvalTo
+    (.send (.lit (.int 0)) "timesRepeat:" [.block [] [] [.lit (.int 42)]])
+    .nil
+
+test "whileTrue: loop" := do
+  -- | i | i := 0. [i < 3] whileTrue: [i := i + 1]. i => 3
+  let program := mkProgram [
+    .assign "i" (.lit (.int 0)),
+    .send
+      (.block [] [] [.send (.var "i") "<" [.lit (.int 3)]])
+      "whileTrue:"
+      [.block [] [] [.assign "i" (.send (.var "i") "+" [.lit (.int 1)])]],
+    .var "i"
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.int 3)) s!"expected 3, got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+test "whileFalse: loop" := do
+  -- | i | i := 0. [i >= 3] whileFalse: [i := i + 1]. i => 3
+  let program := mkProgram [
+    .assign "i" (.lit (.int 0)),
+    .send
+      (.block [] [] [.send (.var "i") ">=" [.lit (.int 3)]])
+      "whileFalse:"
+      [.block [] [] [.assign "i" (.send (.var "i") "+" [.lit (.int 1)])]],
+    .var "i"
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.int 3)) s!"expected 3, got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+test "to:do: loop" := do
+  -- | sum | sum := 0. 1 to: 5 do: [:i | sum := sum + i]. sum => 15
+  let program := mkProgram [
+    .assign "sum" (.lit (.int 0)),
+    .send (.lit (.int 1)) "to:do:"
+      [.lit (.int 5), .block ["i"] [] [.assign "sum" (.send (.var "sum") "+" [.var "i"])]],
+    .var "sum"
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.int 15)) s!"expected 15, got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+-- ============ Non-Local Return Tests ============
+
+test "non-local return from block in method" := do
+  -- Object subclass with method that has block with return
+  let testClass : ClassDef := {
+    name := "TestReturn",
+    super := some "Object",
+    ivars := [],
+    methods := [
+      { selector := "earlyReturn", params := [], temps := [], pragmas := [],
+        body := [
+          .send (.lit (.bool true)) "ifTrue:" [.block [] [] [.return (.lit (.int 42))]],
+          .lit (.int 99)  -- Should not reach here
+        ] }
+    ]
+  }
+  let program := mkProgramWithClasses [testClass] [
+    .assign "t" (.send (.var "TestReturn") "new" []),
+    .send (.var "t") "earlyReturn" []
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.int 42)) s!"expected 42, got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+test "return outside block ends method" := do
+  let testClass : ClassDef := {
+    name := "TestReturn2",
+    super := some "Object",
+    ivars := [],
+    methods := [
+      { selector := "directReturn", params := [], temps := [], pragmas := [],
+        body := [
+          .return (.lit (.int 100)),
+          .lit (.int 200)  -- Should not reach here
+        ] }
+    ]
+  }
+  let program := mkProgramWithClasses [testClass] [
+    .assign "t" (.send (.var "TestReturn2") "new" []),
+    .send (.var "t") "directReturn" []
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.int 100)) s!"expected 100, got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+-- ============ Complex Block Tests ============
+
+test "nested blocks" := do
+  -- [[:x | x + 1] value: 5] value => 6
+  let innerBlock := Expr.block ["x"] [] [.send (.var "x") "+" [.lit (.int 1)]]
+  let outerBlock := Expr.block [] [] [.send innerBlock "value:" [.lit (.int 5)]]
+  shouldEvalTo (.send outerBlock "value" []) (.int 6)
+
+test "block modifies outer variable" := do
+  -- | x | x := 0. [x := x + 10] value. x => 10
+  let program := mkProgram [
+    .assign "x" (.lit (.int 0)),
+    .send (.block [] [] [.assign "x" (.send (.var "x") "+" [.lit (.int 10)])]) "value" [],
+    .var "x"
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.int 10)) s!"expected 10, got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+test "factorial with blocks" := do
+  -- | fact n | n := 5. fact := 1. [n > 0] whileTrue: [fact := fact * n. n := n - 1]. fact => 120
+  let program := mkProgram [
+    .assign "n" (.lit (.int 5)),
+    .assign "fact" (.lit (.int 1)),
+    .send
+      (.block [] [] [.send (.var "n") ">" [.lit (.int 0)]])
+      "whileTrue:"
+      [.block [] [] [
+        .assign "fact" (.send (.var "fact") "*" [.var "n"]),
+        .assign "n" (.send (.var "n") "-" [.lit (.int 1)])
+      ]],
+    .var "fact"
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.int 120)) s!"expected 120, got {reprStr v}"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
 
 -- ============ Cascade Tests ============
 
@@ -659,10 +879,6 @@ test "self outside method errors" := do
   shouldEvalError (.var "self") "self used outside method context"
 
 -- ============ Class and Object Tests ============
-
--- Helper to create a program with class definitions
-def mkProgramWithClasses (classes : List ClassDef) (exprs : List Expr) : Program :=
-  { classes := classes, main := exprs }
 
 -- Test class definitions
 def counterClass : ClassDef := {
