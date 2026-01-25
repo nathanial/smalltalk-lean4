@@ -605,7 +605,401 @@ test "eval block returns error" := do
 test "eval return returns error" := do
   shouldEvalError (.return (.lit (.int 1))) "Return not yet implemented"
 
-test "eval cascade returns error" := do
-  shouldEvalError (.cascade (.lit (.int 1)) [[("foo", [])]]) "Cascades not yet implemented"
+-- ============ Cascade Tests ============
+
+test "cascade single message returns receiver" := do
+  -- 5 negated → sends negated to 5 (-5), but returns 5 (the receiver)
+  shouldEvalTo (.cascade (.lit (.int 5)) [[("negated", [])]]) (.int 5)
+
+test "cascade multiple messages returns receiver" := do
+  -- 5 negated; abs → sends both to 5, returns 5
+  shouldEvalTo (.cascade (.lit (.int 5)) [[("negated", [])], [("abs", [])]]) (.int 5)
+
+test "cascade with string" := do
+  -- "hello" size; isEmpty → sends size (5), isEmpty (false), returns "hello"
+  shouldEvalTo (.cascade (.lit (.str "hello")) [[("size", [])], [("isEmpty", [])]])
+    (.str "hello")
+
+test "cascade with binary message" := do
+  -- 5 + 1; - 2 → sends both to 5, returns 5
+  shouldEvalTo (.cascade (.lit (.int 5)) [[("+", [.lit (.int 1)])], [("-", [.lit (.int 2)])]])
+    (.int 5)
+
+test "cascade error propagates" := do
+  -- 5 foo → unknown selector error
+  shouldEvalError (.cascade (.lit (.int 5)) [[("foo", [])]]) "No primitive"
+
+test "cascade with variable receiver" := do
+  let program := mkProgram [
+    .assign "x" (.lit (.int 10)),
+    .cascade (.var "x") [[("negated", [])], [("abs", [])]]
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.int 10)) "should return 10"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+test "cascade with side effect in args" := do
+  -- Verify arguments are evaluated for each message
+  let program := mkProgram [
+    .assign "count" (.lit (.int 0)),
+    .cascade (.lit (.int 5)) [
+      [("+", [.assign "count" (.send (.var "count") "+" [.lit (.int 1)])])],
+      [("+", [.assign "count" (.send (.var "count") "+" [.lit (.int 1)])])]
+    ],
+    .var "count"
+  ]
+  -- count should be 2 after both cascade messages evaluated their args
+  match Smalltalk.evalProgram program with
+  | .ok v => shouldSatisfy (reprStr v == reprStr (Value.int 2)) "count should be 2"
+  | .error e => throw (IO.userError s!"unexpected error: {e.message}")
+
+-- ============ Self Tests ============
+
+test "self outside method errors" := do
+  shouldEvalError (.var "self") "self used outside method context"
+
+-- ============ Class and Object Tests ============
+
+-- Helper to create a program with class definitions
+def mkProgramWithClasses (classes : List ClassDef) (exprs : List Expr) : Program :=
+  { classes := classes, main := exprs }
+
+-- Test class definitions
+def counterClass : ClassDef := {
+  name := "Counter",
+  super := some "Object",
+  ivars := ["count"],
+  methods := [
+    { selector := "count", params := [], temps := [], pragmas := [],
+      body := [.var "count"] },
+    { selector := "count:", params := ["n"], temps := [], pragmas := [],
+      body := [.assign "count" (.var "n")] },
+    { selector := "increment", params := [], temps := [], pragmas := [],
+      body := [.assign "count" (.send (.var "count") "+" [.lit (.int 1)])] }
+  ]
+}
+
+def pointClass : ClassDef := {
+  name := "Point",
+  super := some "Object",
+  ivars := ["x", "y"],
+  methods := [
+    { selector := "x", params := [], temps := [], pragmas := [],
+      body := [.var "x"] },
+    { selector := "y", params := [], temps := [], pragmas := [],
+      body := [.var "y"] },
+    { selector := "x:", params := ["val"], temps := [], pragmas := [],
+      body := [.assign "x" (.var "val")] },
+    { selector := "y:", params := ["val"], temps := [], pragmas := [],
+      body := [.assign "y" (.var "val")] },
+    { selector := "setX:y:", params := ["newX", "newY"], temps := [], pragmas := [],
+      body := [.assign "x" (.var "newX"), .assign "y" (.var "newY")] }
+  ]
+}
+
+def animalClass : ClassDef := {
+  name := "Animal",
+  super := some "Object",
+  ivars := ["name"],
+  methods := [
+    { selector := "name", params := [], temps := [], pragmas := [],
+      body := [.var "name"] },
+    { selector := "speak", params := [], temps := [], pragmas := [],
+      body := [.lit (.str "...")] }
+  ]
+}
+
+def dogClass : ClassDef := {
+  name := "Dog",
+  super := some "Animal",
+  ivars := ["breed"],
+  methods := [
+    { selector := "breed", params := [], temps := [], pragmas := [],
+      body := [.var "breed"] },
+    { selector := "speak", params := [], temps := [], pragmas := [],
+      body := [.lit (.str "Woof!")] },
+    { selector := "parentSpeak", params := [], temps := [], pragmas := [],
+      body := [.send (.var "super") "speak" []] }
+  ]
+}
+
+test "instantiate object with new" := do
+  let program := mkProgramWithClasses [counterClass] [
+    .send (.var "Counter") "new" []
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok (.object className fields) =>
+      shouldSatisfy (className == "Counter") s!"expected Counter, got {className}"
+      shouldSatisfy (fields.length == 1) s!"expected 1 field, got {fields.length}"
+  | .ok v =>
+      throw (IO.userError s!"expected object, got {reprStr v}")
+  | .error e =>
+      throw (IO.userError s!"unexpected error: {e.message}")
+
+test "instance variable initialized to nil" := do
+  let program := mkProgramWithClasses [counterClass] [
+    .assign "c" (.send (.var "Counter") "new" []),
+    .send (.var "c") "count" []
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v =>
+      let vStr := reprStr v
+      shouldSatisfy (vStr == reprStr Value.nil) s!"expected nil, got {vStr}"
+  | .error e =>
+      throw (IO.userError s!"unexpected error: {e.message}")
+
+test "set and get instance variable" := do
+  let program := mkProgramWithClasses [counterClass] [
+    .assign "c" (.send (.var "Counter") "new" []),
+    .send (.var "c") "count:" [.lit (.int 10)],
+    .send (.var "c") "count" []
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v =>
+      let vStr := reprStr v
+      shouldSatisfy (vStr == reprStr (Value.int 10)) s!"expected 10, got {vStr}"
+  | .error e =>
+      throw (IO.userError s!"unexpected error: {e.message}")
+
+test "method modifies instance variable" := do
+  let program := mkProgramWithClasses [counterClass] [
+    .assign "c" (.send (.var "Counter") "new" []),
+    .send (.var "c") "count:" [.lit (.int 5)],
+    .send (.var "c") "increment" [],
+    .send (.var "c") "count" []
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v =>
+      let vStr := reprStr v
+      shouldSatisfy (vStr == reprStr (Value.int 6)) s!"expected 6, got {vStr}"
+  | .error e =>
+      throw (IO.userError s!"unexpected error: {e.message}")
+
+test "multiple instance variables" := do
+  let program := mkProgramWithClasses [pointClass] [
+    .assign "p" (.send (.var "Point") "new" []),
+    .send (.var "p") "x:" [.lit (.int 3)],
+    .send (.var "p") "y:" [.lit (.int 4)],
+    .send (.send (.var "p") "x" []) "+" [.send (.var "p") "y" []]
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v =>
+      let vStr := reprStr v
+      shouldSatisfy (vStr == reprStr (Value.int 7)) s!"expected 7, got {vStr}"
+  | .error e =>
+      throw (IO.userError s!"unexpected error: {e.message}")
+
+test "keyword method with multiple params" := do
+  let program := mkProgramWithClasses [pointClass] [
+    .assign "p" (.send (.var "Point") "new" []),
+    .send (.var "p") "setX:y:" [.lit (.int 10), .lit (.int 20)],
+    .send (.var "p") "y" []
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v =>
+      let vStr := reprStr v
+      shouldSatisfy (vStr == reprStr (Value.int 20)) s!"expected 20, got {vStr}"
+  | .error e =>
+      throw (IO.userError s!"unexpected error: {e.message}")
+
+test "inheritance method lookup" := do
+  let program := mkProgramWithClasses [animalClass, dogClass] [
+    .assign "d" (.send (.var "Dog") "new" []),
+    .send (.var "d") "speak" []
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v =>
+      let vStr := reprStr v
+      shouldSatisfy (vStr == reprStr (Value.str "Woof!")) s!"expected Woof!, got {vStr}"
+  | .error e =>
+      throw (IO.userError s!"unexpected error: {e.message}")
+
+test "inherited method from superclass" := do
+  let program := mkProgramWithClasses [animalClass, dogClass] [
+    .assign "a" (.send (.var "Animal") "new" []),
+    .send (.var "a") "speak" []
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v =>
+      let vStr := reprStr v
+      shouldSatisfy (vStr == reprStr (Value.str "...")) s!"expected ..., got {vStr}"
+  | .error e =>
+      throw (IO.userError s!"unexpected error: {e.message}")
+
+test "super call invokes superclass method" := do
+  let program := mkProgramWithClasses [animalClass, dogClass] [
+    .assign "d" (.send (.var "Dog") "new" []),
+    .send (.var "d") "parentSpeak" []
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v =>
+      let vStr := reprStr v
+      shouldSatisfy (vStr == reprStr (Value.str "...")) s!"expected ..., got {vStr}"
+  | .error e =>
+      throw (IO.userError s!"unexpected error: {e.message}")
+
+test "super outside method errors" := do
+  shouldEvalError (.var "super") "super used outside method context"
+
+test "core class Object exists" := do
+  let program := mkProgram [
+    .send (.var "Object") "new" []
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok (.object className _) =>
+      shouldSatisfy (className == "Object") s!"expected Object, got {className}"
+  | .ok v =>
+      throw (IO.userError s!"expected object, got {reprStr v}")
+  | .error e =>
+      throw (IO.userError s!"unexpected error: {e.message}")
+
+test "wrong arity error" := do
+  let program := mkProgramWithClasses [counterClass] [
+    .assign "c" (.send (.var "Counter") "new" []),
+    .send (.var "c") "count:" []  -- missing argument
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v =>
+      throw (IO.userError s!"expected error, got value: {reprStr v}")
+  | .error e =>
+      shouldSatisfy (e.message.containsSubstr "Wrong arity") s!"expected Wrong arity error, got: {e.message}"
+
+test "method uses temporary variable" := do
+  let tempClass : ClassDef := {
+    name := "TempTest",
+    super := some "Object",
+    ivars := [],
+    methods := [
+      { selector := "compute", params := [], temps := ["temp"], pragmas := [],
+        body := [
+          .assign "temp" (.lit (.int 42)),
+          .var "temp"
+        ] }
+    ]
+  }
+  let program := mkProgramWithClasses [tempClass] [
+    .assign "t" (.send (.var "TempTest") "new" []),
+    .send (.var "t") "compute" []
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v =>
+      let vStr := reprStr v
+      shouldSatisfy (vStr == reprStr (Value.int 42)) s!"expected 42, got {vStr}"
+  | .error e =>
+      throw (IO.userError s!"unexpected error: {e.message}")
+
+-- ============ Primitive Method Lookup Tests ============
+
+-- User-defined method on Integer class
+def integerWithSquared : ClassDef := {
+  name := "Integer",
+  super := some "Object",
+  ivars := [],
+  methods := [
+    { selector := "squared", params := [], temps := [], pragmas := [],
+      body := [.send (.var "self") "*" [.var "self"]] }
+  ]
+}
+
+test "user-defined method on Integer" := do
+  let program := mkProgramWithClasses [integerWithSquared] [
+    .send (.lit (.int 5)) "squared" []
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v =>
+      let vStr := reprStr v
+      shouldSatisfy (vStr == reprStr (Value.int 25)) s!"expected 25, got {vStr}"
+  | .error e =>
+      throw (IO.userError s!"unexpected error: {e.message}")
+
+-- User-defined method on String class
+def stringWithReverse : ClassDef := {
+  name := "String",
+  super := some "Object",
+  ivars := [],
+  methods := [
+    { selector := "reversed", params := [], temps := [], pragmas := [],
+      -- Return self for now since we don't have string reversal primitive
+      body := [.var "self"] }
+  ]
+}
+
+test "user-defined method on String" := do
+  let program := mkProgramWithClasses [stringWithReverse] [
+    .send (.lit (.str "hello")) "reversed" []
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v =>
+      let vStr := reprStr v
+      shouldSatisfy (vStr == reprStr (Value.str "hello")) s!"expected hello, got {vStr}"
+  | .error e =>
+      throw (IO.userError s!"unexpected error: {e.message}")
+
+-- Test that primitives still work when no user method defined
+test "primitives work without user methods" := do
+  let program := mkProgram [
+    .send (.lit (.int 5)) "+" [.lit (.int 3)]
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v =>
+      let vStr := reprStr v
+      shouldSatisfy (vStr == reprStr (Value.int 8)) s!"expected 8, got {vStr}"
+  | .error e =>
+      throw (IO.userError s!"unexpected error: {e.message}")
+
+-- Test primitive pragma with fallback
+def integerWithPrimitivePlus : ClassDef := {
+  name := "Integer",
+  super := some "Object",
+  ivars := [],
+  methods := [
+    { selector := "+", params := ["n"], temps := [],
+      pragmas := [{ selector := "primitive:", args := [.int 1] }],
+      body := [.lit (.int 999)] }  -- Fallback if primitive fails
+  ]
+}
+
+test "primitive pragma uses primitive first" := do
+  let program := mkProgramWithClasses [integerWithPrimitivePlus] [
+    .send (.lit (.int 5)) "+" [.lit (.int 3)]
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v =>
+      let vStr := reprStr v
+      -- Primitive should succeed, returning 8 (not the fallback 999)
+      shouldSatisfy (vStr == reprStr (Value.int 8)) s!"expected 8, got {vStr}"
+  | .error e =>
+      throw (IO.userError s!"unexpected error: {e.message}")
+
+-- Test True/False class distinction
+test "true and false have different classes" := do
+  -- Define a method only on True
+  let trueClass : ClassDef := {
+    name := "True",
+    super := some "Boolean",
+    ivars := [],
+    methods := [
+      { selector := "isTrue", params := [], temps := [], pragmas := [],
+        body := [.lit (.str "yes")] }
+    ]
+  }
+  let falseClass : ClassDef := {
+    name := "False",
+    super := some "Boolean",
+    ivars := [],
+    methods := [
+      { selector := "isTrue", params := [], temps := [], pragmas := [],
+        body := [.lit (.str "no")] }
+    ]
+  }
+  let program := mkProgramWithClasses [trueClass, falseClass] [
+    .send (.lit (.bool true)) "isTrue" []
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v =>
+      let vStr := reprStr v
+      shouldSatisfy (vStr == reprStr (Value.str "yes")) s!"expected yes, got {vStr}"
+  | .error e =>
+      throw (IO.userError s!"unexpected error: {e.message}")
 
 end EvalTests

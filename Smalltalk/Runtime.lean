@@ -19,6 +19,13 @@ inductive Value
 /-- Variable environment. -/
 abbrev Env := List (Symbol × Value)
 
+/-- Class registry mapping class names to definitions. -/
+abbrev ClassRegistry := List (Symbol × ClassDef)
+
+/-- Look up a class by name in the registry. -/
+def registryLookup (reg : ClassRegistry) (name : Symbol) : Option ClassDef :=
+  reg.find? (fun (n, _) => n == name) |>.map Prod.snd
+
 /-- Empty environment. -/
 def emptyEnv : Env := []
 
