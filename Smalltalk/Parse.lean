@@ -615,15 +615,15 @@ def methodInClass : Parser Unit Method := do
   ws
   pure { selector := selector, params := params, temps := temps, pragmas := pragmas.toList, body := body }
 
-/-- Parse zero or more class methods until end. -/
-partial def classMethods : Parser Unit (List Method) := do
-  let endAhead ← opt (attempt (lookAhead (symbol "end")))
-  match endAhead with
+/-- Parse zero or more class methods until stop parser matches. -/
+partial def classMethodsUntil (stop : Parser Unit Unit) : Parser Unit (List Method) := do
+  let stopAhead ← opt (attempt (lookAhead stop))
+  match stopAhead with
   | some _ => pure []
   | none =>
       let m ← methodInClass
       let _ ← opt (attempt (symbol "!"))
-      let rest ← classMethods
+      let rest ← classMethodsUntil stop
       pure (m :: rest)
 
 /-- Parse a class definition. -/
@@ -635,9 +635,14 @@ def classDef : Parser Unit ClassDef := do
     symbol "<"
     ident)
   let ivars ← classIvars
-  let methods ← classMethods
+  let methods ← classMethodsUntil (attempt (symbol "class") <|> symbol "end")
+  let classMethods ←
+    (attempt do
+      symbol "class"
+      classMethodsUntil (symbol "end")) <|>
+    pure []
   symbol "end"
-  pure { name := name, super := super, ivars := ivars, methods := methods }
+  pure { name := name, super := super, ivars := ivars, methods := methods, classMethods := classMethods }
 
 /-- Parse Smalltalk source into a program (class definitions + expressions). -/
 def programParser : Parser Unit Program := do

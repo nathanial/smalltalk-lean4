@@ -23,6 +23,7 @@ structure ExecState where
   self : Option Value := none
   classes : ClassRegistry := []
   currentClass : Option Symbol := none
+  nextObjectId : Nat := 1
   deriving Repr, Inhabited
 
 /-- Convert a literal AST node to a runtime value. -/
@@ -52,6 +53,56 @@ partial def lookupMethod (registry : ClassRegistry) (className : Symbol) (select
           | none => none
           | some superName => lookupMethod registry superName selector
 
+/-- Metaclass name for a class. -/
+def metaName (name : Symbol) : Symbol :=
+  name ++ " class"
+
+/-- Check if a name is a metaclass. -/
+def isMetaName (name : Symbol) : Bool :=
+  name.endsWith " class"
+
+/-- Build a metaclass definition from a class definition. -/
+def toMetaclass (cls : ClassDef) : ClassDef :=
+  let metaSuper :=
+    match cls.super with
+    | some superName => some (metaName superName)
+    | none => some "Class"
+  { name := metaName cls.name
+    super := metaSuper
+    ivars := []
+    methods := cls.classMethods
+    classMethods := [] }
+
+/-- Expand classes with metaclasses, skipping already-expanded metaclasses. -/
+def expandClasses (classes : List ClassDef) : List ClassDef :=
+  classes.foldr
+    (fun cls acc =>
+      if isMetaName cls.name then
+        cls :: acc
+      else
+        cls :: toMetaclass cls :: acc)
+    []
+
+/-- Build the class registry with metaclasses. -/
+def buildRegistry (classes : List ClassDef) : ClassRegistry :=
+  (expandClasses classes).map (fun c => (c.name, c))
+
+/-- Get the class name for a runtime value. -/
+def classNameOf : Value → Symbol
+  | .int _ => "Integer"
+  | .float _ => "Float"
+  | .str _ => "String"
+  | .char _ => "Character"
+  | .symbol _ => "Symbol"
+  | .bool true => "True"
+  | .bool false => "False"
+  | .nil => "UndefinedObject"
+  | .array _ => "Array"
+  | .dict _ => "Dictionary"
+  | .object _ cn _ => cn
+  | .classObj name => metaName name
+  | .block _ _ _ _ _ => "Block"
+
 /-- Check if a class inherits from Exception -/
 partial def isExceptionClass (registry : ClassRegistry) (className : Symbol) : Bool :=
   if className == "Exception" then true
@@ -71,6 +122,28 @@ partial def exceptionMatches (registry : ClassRegistry) (exClass : Symbol) (hand
         match classDef.super with
         | none => false
         | some superName => exceptionMatches registry superName handlerClass
+
+/-- Collect instance variables from a class and its superclasses. -/
+partial def collectIvars (registry : ClassRegistry) (className : Symbol) : List Symbol :=
+  match registryLookup registry className with
+  | none => []
+  | some classDef =>
+      let superIvars :=
+        match classDef.super with
+        | some superName => collectIvars registry superName
+        | none => []
+      superIvars ++ classDef.ivars
+
+/-- Allocate a new object instance. -/
+def allocObject (state : ExecState) (className : Symbol)
+    : Except EvalError (ExecState × Value) := do
+  match registryLookup state.classes className with
+  | some _ =>
+      let fields := collectIvars state.classes className |>.map (fun iv => (iv, Value.nil))
+      let obj := Value.object state.nextObjectId className fields
+      let nextState := { state with nextObjectId := state.nextObjectId + 1 }
+      .ok (nextState, obj)
+  | none => .error { message := s!"Unknown class: {className}" }
 
 mutual
   /-- Evaluate a method call on an object. -/
@@ -104,30 +177,73 @@ mutual
   /-- Evaluate a message send, optionally updating a receiver variable after method call. -/
   partial def evalSend (state : ExecState) (recvVal : Value) (sel : Symbol) (argVals : List Value)
       (recvVarName : Option Symbol) : Except EvalError (ExecState × Value) := do
-    -- Handle object instantiation: ClassName new
-    if sel == "new" && argVals.isEmpty then
-      match recvVal with
-      | .symbol className =>
-          match registryLookup state.classes className with
-          | some classDef =>
-              let fields := classDef.ivars.map (fun iv => (iv, Value.nil))
-              .ok (state, .object className fields)
-          | none =>
-              match evalPrimitive recvVal sel argVals with
-              | .ok v => .ok (state, v)
-              | .error e => .error { message := e.message }
-      | _ =>
-          evalSendToValue state recvVal sel argVals recvVarName
-    else
-      evalSendToValue state recvVal sel argVals recvVarName
+    evalSendToValue state recvVal sel argVals recvVarName
 
   /-- Dispatch message to a value (object or primitive). -/
   partial def evalSendToValue (state : ExecState) (recvVal : Value) (sel : Symbol) (argVals : List Value)
       (recvVarName : Option Symbol) : Except EvalError (ExecState × Value) := do
-    -- Handle block-specific messages first
+    -- Handle identity messages for all values
+    if sel == "==" || sel == "~~" then
+      match argVals with
+      | [other] =>
+          let identical := valueIdentical recvVal other
+          if sel == "==" then .ok (state, .bool identical)
+          else .ok (state, .bool (!identical))
+      | _ => .error { message := s!"{sel} expects exactly 1 argument" }
+    else
+    -- Handle class objects first
     match recvVal with
+    | .classObj className =>
+        match sel with
+        | "new" =>
+            if argVals.isEmpty then
+              allocObject state className
+            else
+              .error { message := "new takes no arguments" }
+        | "basicNew" =>
+            if argVals.isEmpty then
+              allocObject state className
+            else
+              .error { message := "basicNew takes no arguments" }
+        | "name" =>
+            if argVals.isEmpty then .ok (state, .symbol className)
+            else .error { message := "name takes no arguments" }
+        | "superclass" =>
+            if argVals.isEmpty then
+              match registryLookup state.classes className with
+              | some classDef =>
+                  match classDef.super with
+                  | some superName => .ok (state, .classObj superName)
+                  | none => .ok (state, .nil)
+              | none => .error { message := s!"Unknown class: {className}" }
+            else
+              .error { message := "superclass takes no arguments" }
+        | "class" =>
+            if argVals.isEmpty then .ok (state, .classObj (classNameOf recvVal))
+            else .error { message := "class takes no arguments" }
+        | "signal:" =>
+            match argVals with
+            | [.str msg] =>
+                if isExceptionClass state.classes className then
+                  let (_, exVal) ← allocObject state className
+                  let exVal := match exVal with
+                    | .object id cn fields =>
+                        let newFields :=
+                          fields.map (fun (n, v) => if n == "messageText" then (n, .str msg) else (n, v))
+                        .object id cn newFields
+                    | other => other
+                  .error { message := "", exceptionValue := some exVal }
+                else
+                  .error { message := s!"{className} is not an exception class" }
+            | _ => .error { message := "signal: expects a string message" }
+        | _ =>
+            evalSendToValueFallback state recvVal sel argVals recvVarName
+    -- Handle block-specific messages
     | .block _ _ _ _ _ =>
         match sel with
+        | "class" =>
+            if argVals.isEmpty then .ok (state, .classObj (classNameOf recvVal))
+            else .error { message := "class takes no arguments" }
         | "value" =>
             if argVals.isEmpty then evalBlockValue state recvVal []
             else .error { message := "value takes no arguments" }
@@ -171,6 +287,10 @@ mutual
             | _ => .error { message := "ifCurtailed: expects exactly 1 block" }
         | _ => .error { message := s!"Block does not understand: {sel}" }
     | _ =>
+    -- Handle class message for any receiver
+    if sel == "class" && argVals.isEmpty then
+      .ok (state, .classObj (classNameOf recvVal))
+    else
     -- Handle boolean control flow messages
     match recvVal, sel with
     | .bool b, "ifTrue:" =>
@@ -317,25 +437,15 @@ mutual
         match argVals with
         | [initial, blockVal] => evalDictInject state entries initial blockVal
         | _ => .error { message := "inject:into: expects exactly 2 arguments" }
-    -- Exception signaling: ExceptionClass signal: 'message'
-    | .symbol className, "signal:" =>
-        match argVals with
-        | [.str msg] =>
-            if isExceptionClass state.classes className then
-              let ex := Value.object className [("messageText", .str msg)]
-              .error { message := "", exceptionValue := some ex }
-            else
-              .error { message := s!"{className} is not an exception class" }
-        | _ => .error { message := "signal: expects a string message" }
     -- Exception signaling: anException signal
-    | .object className fields, "signal" =>
+    | .object _ className _, "signal" =>
         if isExceptionClass state.classes className then
           .error { message := "", exceptionValue := some recvVal }
         else
           -- Fall through to method lookup (handled below)
           evalSendToValueFallback state recvVal sel argVals recvVarName
     -- Exception messageText accessor
-    | .object className fields, "messageText" =>
+    | .object _ className fields, "messageText" =>
         if isExceptionClass state.classes className then
           match fields.find? (fun (n, _) => n == "messageText") with
           | some (_, v) => .ok (state, v)
@@ -350,19 +460,7 @@ mutual
       (argVals : List Value) (recvVarName : Option Symbol)
       : Except EvalError (ExecState × Value) := do
     -- Get the class name for this value (works for both objects and built-in types)
-    let className := match recvVal with
-      | .object cn _ => cn
-      | .int _ => "Integer"
-      | .float _ => "Float"
-      | .str _ => "String"
-      | .char _ => "Character"
-      | .symbol _ => "Symbol"
-      | .bool true => "True"
-      | .bool false => "False"
-      | .nil => "UndefinedObject"
-      | .array _ => "Array"
-      | .dict _ => "Dictionary"
-      | .block _ _ _ _ _ => "Block"
+    let className := classNameOf recvVal
     -- Try method lookup first (allows user-defined methods on built-in types)
     match lookupMethod state.classes className sel with
     | some (defClass, method) =>
@@ -505,7 +603,7 @@ mutual
         | some exVal =>
             -- Check if exception matches handler class
             let exClassName := match exVal with
-              | .object cn _ => cn
+              | .object _ cn _ => cn
               | _ => ""
             if exceptionMatches state.classes exClassName exClass then
               -- Handler catches this exception
@@ -858,30 +956,30 @@ mutual
         | none =>
             -- 2. Check instance variables if we're in a method context
             match state.self with
-            | some (.object _ fields) =>
+            | some (.object _ _ fields) =>
                 match fields.find? (fun (n, _) => n == name) with
                 | some (_, v) => .ok (state, v)
                 | none =>
                     -- 3. Check if it's a class name
                     if registryLookup state.classes name |>.isSome then
-                      .ok (state, .symbol name)
+                      .ok (state, .classObj name)
                     else
                       .error { message := s!"Undefined variable: {name}" }
             | _ =>
                 -- 3. Check if it's a class name
                 if registryLookup state.classes name |>.isSome then
-                  .ok (state, .symbol name)
+                  .ok (state, .classObj name)
                 else
                   .error { message := s!"Undefined variable: {name}" }
     | .assign name valueExpr => do
         let (state', value) ← evalExpr state valueExpr
         -- Check if assigning to an instance variable
         match state'.self with
-        | some (.object cn fields) =>
+        | some (.object id cn fields) =>
             if fields.any (fun (n, _) => n == name) then
               -- Update instance variable
               let newFields := fields.map (fun (n, v) => if n == name then (n, value) else (n, v))
-              let newSelf := Value.object cn newFields
+              let newSelf := Value.object id cn newFields
               .ok ({ state' with self := some newSelf }, value)
             else
               -- Normal variable assignment
@@ -944,28 +1042,16 @@ mutual
           for (sel, argsExpr) in chain do
             let (newState, argVals) ← evalExprs currentState argsExpr
             currentState := newState
-            -- Try method dispatch for objects, else primitive
-            match recvVal with
-            | .object className _ =>
-                match lookupMethod currentState.classes className sel with
-                | some (defClass, method) =>
-                    match evalMethodCall currentState recvVal defClass method argVals with
-                    | .ok (s, _) => currentState := s
-                    | .error e => throw e
-                | none =>
-                    match evalPrimitive recvVal sel argVals with
-                    | .ok _ => pure ()
-                    | .error e => throw { message := e.message }
-            | _ =>
-                match evalPrimitive recvVal sel argVals with
-                | .ok _ => pure ()
-                | .error e => throw { message := e.message }
+            let (s, _) ← evalSendToValue currentState recvVal sel argVals none
+            currentState := s
         .ok (currentState, recvVal)  -- Return the original receiver
 end
 
 /-- Core classes always available. -/
 def coreClasses : List ClassDef := [
   { name := "Object", super := none, ivars := [], methods := [] },
+  { name := "Class", super := some "Object", ivars := [], methods := [] },
+  { name := "Metaclass", super := some "Class", ivars := [], methods := [] },
   { name := "UndefinedObject", super := some "Object", ivars := [], methods := [] },
   -- Built-in type classes (primitives are handled in evalPrimitive, but methods can be added)
   { name := "Integer", super := some "Object", ivars := [], methods := [] },
@@ -985,26 +1071,9 @@ def coreClasses : List ClassDef := [
   { name := "Warning", super := some "Exception", ivars := [], methods := [] }
 ]
 
-/-- Get the class name for a runtime value. -/
-def classNameOf : Value → Symbol
-  | .int _ => "Integer"
-  | .float _ => "Float"
-  | .str _ => "String"
-  | .char _ => "Character"
-  | .symbol _ => "Symbol"
-  | .bool true => "True"
-  | .bool false => "False"
-  | .nil => "UndefinedObject"
-  | .array _ => "Array"
-  | .dict _ => "Dictionary"
-  | .object cn _ => cn
-  | .block _ _ _ _ _ => "Block"
-
 /-- Evaluate a whole program. -/
 def evalProgram (program : Program) : Except EvalError Value :=
-  let userClasses := program.classes.map (fun c => (c.name, c))
-  let coreRegistry := coreClasses.map (fun c => (c.name, c))
-  let registry := userClasses ++ coreRegistry
+  let registry := buildRegistry (program.classes ++ coreClasses)
   match evalSeq { env := emptyEnv, classes := registry } program.main with
   | .ok (_, value) => .ok value
   | .error e => .error e

@@ -7,7 +7,7 @@ namespace Smalltalk
 namespace Image
 
 def imageMagic : ByteArray := ByteArray.mk #[83, 84, 73, 77] -- "STIM"
-def imageVersion : UInt8 := 1
+def imageVersion : UInt8 := 2
 
 structure Reader where
   bytes : ByteArray
@@ -312,13 +312,15 @@ def encodeClassDef (c : ClassDef) : ByteArray :=
     ++ encodeOption encodeString c.super
     ++ encodeList encodeString c.ivars
     ++ encodeList encodeMethod c.methods
+    ++ encodeList encodeMethod c.classMethods
 
 def readClassDef (r : Reader) : Except String (ClassDef × Reader) := do
   let (name, r) ← readString r
   let (super, r) ← readOption readString r
   let (ivars, r) ← readList readString r
   let (methods, r) ← readList readMethod r
-  .ok ({ name := name, super := super, ivars := ivars, methods := methods }, r)
+  let (classMethods, r) ← readList readMethod r
+  .ok ({ name := name, super := super, ivars := ivars, methods := methods, classMethods := classMethods }, r)
 
 partial def encodeValue : Value → ByteArray
   | .int n => encodeByte 0 ++ encodeInt n
@@ -330,8 +332,9 @@ partial def encodeValue : Value → ByteArray
   | .nil => encodeByte 6
   | .array elems => encodeByte 7 ++ encodeList encodeValue elems
   | .dict entries => encodeByte 8 ++ encodeList (encodePair encodeValue encodeValue) entries
-  | .object className fields =>
+  | .object id className fields =>
       encodeByte 9
+        ++ encodeNat id
         ++ encodeString className
         ++ encodeList (encodePair encodeString encodeValue) fields
   | .block params temps body capturedEnv capturedSelf =>
@@ -341,6 +344,8 @@ partial def encodeValue : Value → ByteArray
         ++ encodeList encodeExpr body
         ++ encodeList (encodePair encodeString encodeValue) capturedEnv
         ++ encodeOption encodeValue capturedSelf
+  | .classObj name =>
+      encodeByte 11 ++ encodeString name
 
 partial def readValue (r : Reader) : Except String (Value × Reader) := do
   let (tag, r) ← readByte r
@@ -371,9 +376,10 @@ partial def readValue (r : Reader) : Except String (Value × Reader) := do
       let (entries, r) ← readList (readPair readValue readValue) r
       .ok (.dict entries, r)
   | 9 =>
+      let (id, r) ← readNat r
       let (className, r) ← readString r
       let (fields, r) ← readList (readPair readString readValue) r
-      .ok (.object className fields, r)
+      .ok (.object id className fields, r)
   | 10 =>
       let (params, r) ← readList readString r
       let (temps, r) ← readList readString r
@@ -381,6 +387,9 @@ partial def readValue (r : Reader) : Except String (Value × Reader) := do
       let (capturedEnv, r) ← readList (readPair readString readValue) r
       let (capturedSelf, r) ← readOption readValue r
       .ok (.block params temps body capturedEnv capturedSelf, r)
+  | 11 =>
+      let (name, r) ← readString r
+      .ok (.classObj name, r)
   | _ => .error "invalid value tag"
 
 def encodeExecState (state : ExecState) : ByteArray :=
@@ -388,13 +397,15 @@ def encodeExecState (state : ExecState) : ByteArray :=
     ++ encodeOption encodeValue state.self
     ++ encodeList (encodePair encodeString encodeClassDef) state.classes
     ++ encodeOption encodeString state.currentClass
+    ++ encodeNat state.nextObjectId
 
 def readExecState (r : Reader) : Except String (ExecState × Reader) := do
   let (env, r) ← readList (readPair readString readValue) r
   let (self, r) ← readOption readValue r
   let (classes, r) ← readList (readPair readString readClassDef) r
   let (currentClass, r) ← readOption readString r
-  .ok ({ env := env, self := self, classes := classes, currentClass := currentClass }, r)
+  let (nextObjectId, r) ← readNat r
+  .ok ({ env := env, self := self, classes := classes, currentClass := currentClass, nextObjectId := nextObjectId }, r)
 
 def encode (state : ExecState) : ByteArray :=
   imageMagic ++ encodeByte imageVersion ++ encodeExecState state

@@ -58,6 +58,7 @@ structure ClassDef where
   super : Option Symbol := none
   ivars : List Symbol := []
   methods : List Method := []
+  classMethods : List Method := []
   deriving Repr, BEq, Inhabited
 
 /-- Whole program with class table and entry expressions. -/

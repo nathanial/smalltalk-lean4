@@ -45,9 +45,10 @@ def sampleState : ExecState :=
         .block ["n"] ["tmp"] [.assign "tmp" (.var "n"), .return (.var "tmp")]
           [("capt", .int 9)] (some (.int 7)))
     ]
-    self := some (.object "Point" [("x", .int 1), ("y", .int 2)])
+    self := some (.object 1 "Point" [("x", .int 1), ("y", .int 2)])
     classes := [("Point", sampleClass)]
     currentClass := some "Point"
+    nextObjectId := 2
   }
 
 test "image encode/decode roundtrip" := do

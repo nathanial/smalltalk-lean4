@@ -202,6 +202,13 @@ test "parse class then main expressions" := do
   let program ← parseProgram "class Foo end 1 + 2"
   program.main ≡ [Expr.send (Expr.lit (.int 1)) "+" [Expr.lit (.int 2)]]
 
+test "parse class-side methods" := do
+  let program ← parseProgram "class Foo class answer ^ 42 ! end"
+  let cls := program.classes.head!
+  cls.methods.length ≡ 0
+  cls.classMethods.length ≡ 1
+  cls.classMethods.head!.selector ≡ "answer"
+
 test "disallow ! as binary selector in expressions" := do
   let msg ← parseError "1 ! 2"
   shouldSatisfy (msg.startsWith "Parse error") "expected parse error"

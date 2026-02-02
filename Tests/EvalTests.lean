@@ -939,16 +939,51 @@ def dogClass : ClassDef := {
   ]
 }
 
+def factoryClass : ClassDef := {
+  name := "Factory",
+  super := some "Object",
+  ivars := [],
+  methods := [],
+  classMethods := [
+    { selector := "answer", params := [], temps := [], pragmas := [],
+      body := [.lit (.int 42)] }
+  ]
+}
+
 test "instantiate object with new" := do
   let program := mkProgramWithClasses [counterClass] [
     .send (.var "Counter") "new" []
   ]
   match Smalltalk.evalProgram program with
-  | .ok (.object className fields) =>
+  | .ok (.object _ className fields) =>
       shouldSatisfy (className == "Counter") s!"expected Counter, got {className}"
       shouldSatisfy (fields.length == 1) s!"expected 1 field, got {fields.length}"
   | .ok v =>
       throw (IO.userError s!"expected object, got {reprStr v}")
+  | .error e =>
+      throw (IO.userError s!"unexpected error: {e.message}")
+
+test "class-side method dispatch" := do
+  let program := mkProgramWithClasses [factoryClass] [
+    .send (.var "Factory") "answer" []
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v =>
+      let vStr := reprStr v
+      shouldSatisfy (vStr == reprStr (Value.int 42)) s!"expected 42, got {vStr}"
+  | .error e =>
+      throw (IO.userError s!"unexpected error: {e.message}")
+
+test "object identity uses ids" := do
+  let program := mkProgramWithClasses [counterClass] [
+    .assign "a" (.send (.var "Counter") "new" []),
+    .assign "b" (.send (.var "Counter") "new" []),
+    .send (.var "a") "==" [.var "b"]
+  ]
+  match Smalltalk.evalProgram program with
+  | .ok v =>
+      let vStr := reprStr v
+      shouldSatisfy (vStr == reprStr (Value.bool false)) s!"expected false, got {vStr}"
   | .error e =>
       throw (IO.userError s!"unexpected error: {e.message}")
 
@@ -1062,7 +1097,7 @@ test "core class Object exists" := do
     .send (.var "Object") "new" []
   ]
   match Smalltalk.evalProgram program with
-  | .ok (.object className _) =>
+  | .ok (.object _ className _) =>
       shouldSatisfy (className == "Object") s!"expected Object, got {className}"
   | .ok v =>
       throw (IO.userError s!"expected object, got {reprStr v}")

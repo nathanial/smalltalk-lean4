@@ -42,9 +42,15 @@ class Point < Object | x y |
   x
     ^ x.
 !
+class
+  origin
+    ^ self new.
+!
 end
 ```
 
 Methods are separated by `!`. A class body ends with `end`. The parser currently treats
 `class`/`end` as reserved words inside class bodies. `!` is reserved as a method delimiter
 and is not available as a binary selector in expressions.
+
+Class-side methods are defined inside a `class` section within the class body.

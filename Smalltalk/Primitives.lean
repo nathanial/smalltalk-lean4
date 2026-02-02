@@ -21,7 +21,8 @@ def typeNameOf : Value → String
   | .nil => "UndefinedObject"
   | .array _ => "Array"
   | .dict _ => "Dictionary"
-  | .object className _ => className
+  | .object _ className _ => className
+  | .classObj _ => "Class"
   | .block _ _ _ _ _ => "Block"
 
 /-- Convert Float to Int by truncating towards zero. -/
@@ -42,7 +43,8 @@ partial def valueIdentical : Value → Value → Bool
   | .nil, .nil => true
   | .array a, .array b => a.length == b.length && (a.zip b).all fun (x, y) => valueIdentical x y
   | .dict a, .dict b => a.length == b.length
-  | .object n1 _, .object n2 _ => n1 == n2  -- simplified: real identity would need object IDs
+  | .object id1 _ _, .object id2 _ _ => id1 == id2
+  | .classObj n1, .classObj n2 => n1 == n2
   | .block _ _ _ _ _, .block _ _ _ _ _ => false  -- blocks are never identical (would need object IDs)
   | _, _ => false
 
@@ -359,7 +361,8 @@ def evalPrimitive (recv : Value) (sel : Symbol) (args : List Value)
   | .nil => evalNilPrimitive sel args
   | .array elems => evalArrayPrimitive elems sel args
   | .dict entries => evalDictPrimitive entries sel args
-  | .object _ _ => .error { message := s!"No primitive '{sel}' for {typeNameOf recv}" }
+  | .object _ _ _ => .error { message := s!"No primitive '{sel}' for {typeNameOf recv}" }
+  | .classObj _ => .error { message := s!"No primitive '{sel}' for {typeNameOf recv}" }
   | .block _ _ _ _ _ => .error { message := s!"No primitive '{sel}' for Block" }
 
 end Smalltalk

@@ -59,9 +59,8 @@ def parseArgs (args : List String) : Except String CliArgs :=
   loop args none none none false none
 
 def withProgramClasses (state : ExecState) (program : Program) : ExecState :=
-  let userRegistry := program.classes.map (fun c => (c.name, c))
-  let coreRegistry := coreClasses.map (fun c => (c.name, c))
-  let baseRegistry := if state.classes.isEmpty then coreRegistry else state.classes
+  let userRegistry := buildRegistry program.classes
+  let baseRegistry := if state.classes.isEmpty then buildRegistry coreClasses else state.classes
   { state with classes := userRegistry ++ baseRegistry }
 
 def run (cfg : CliArgs) : IO UInt32 := do
