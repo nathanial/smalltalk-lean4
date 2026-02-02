@@ -16,6 +16,15 @@ lake build
 lake test
 ```
 
+## CLI
+
+```bash
+lake run smalltalk_app -- [--load image] [--save image] <source-file>
+```
+
+- `--load image` loads an image (serialized interpreter state) before evaluation.
+- `--save image` writes the updated interpreter state after evaluation.
+
 ## Layout
 
 ```

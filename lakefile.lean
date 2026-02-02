@@ -17,3 +17,6 @@ lean_lib Tests where
 @[test_driver]
 lean_exe smalltalk_tests where
   root := `Tests.Main
+
+lean_exe smalltalk_app where
+  root := `Smalltalk.Main
