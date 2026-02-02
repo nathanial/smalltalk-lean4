@@ -6,6 +6,7 @@ import Tests.ASTTests
 import Tests.ParserTests
 import Tests.EvalTests
 import Tests.MethodTests
+import Tests.ImageTests
 
 open Crucible
 
