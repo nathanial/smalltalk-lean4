@@ -68,9 +68,9 @@ def binarySelector : Parser Unit String := attempt do
   ws
   let chars ← many1Chars (satisfy isBinaryChar)
   pure chars
-where
-  isBinaryChar (c : Char) : Bool :=
-    "+-*/\\=<>~&|,@%!?".contains c
+  where
+    isBinaryChar (c : Char) : Bool :=
+      "+-*/\\=<>~&|,@%?".contains c
 
 /-- Parse a string literal using single quotes ('' to escape '). -/
 def stringLitCore (skipWs : Bool) : Parser Unit String := do
@@ -502,6 +502,22 @@ mutual
       let _ ← opt (attempt (symbol "."))
       pure (first :: rest.toList)
 
+  /-- Parse a sequence of statements until the end parser matches (end is not consumed). -/
+  partial def seqStatementsUntil (endp : Parser Unit Unit) : Parser Unit (List Expr) := do
+    let endAhead ← opt (attempt (lookAhead endp))
+    match endAhead with
+    | some _ => pure []
+    | none =>
+        let first ← statement
+        let rest ← many (attempt do
+          symbol "."
+          let stopAhead ← opt (attempt (lookAhead endp))
+          match stopAhead with
+          | some _ => pure none
+          | none => some <$> statement)
+        let tail := rest.toList.filterMap (fun e => e)
+        pure (first :: tail)
+
   /-- Parse a cascade message (unary/binary/keyword). -/
   partial def cascadeMessage : Parser Unit Message :=
     (attempt keywordMessage) <|>
@@ -542,6 +558,15 @@ def methodTemps : Parser Unit (List Symbol) :=
     pure temps.toList) <|>
   pure []
 
+/-- Parse class instance variables. -/
+def classIvars : Parser Unit (List Symbol) :=
+  (attempt do
+    symbol "|"
+    let ivars ← many (attempt ident)
+    symbol "|"
+    pure ivars.toList) <|>
+  pure []
+
 /-- Parse a method pragma (e.g., <primitive: 1>). -/
 def pragma : Parser Unit Pragma := attempt do
   symbol "<"
@@ -580,13 +605,48 @@ def methodParser : Parser Unit Method := do
   eof
   pure { selector := selector, params := params, temps := temps, pragmas := pragmas.toList, body := body }
 
-/-- Parse Smalltalk source into a program (expressions only). -/
+/-- Parse a method definition inside a class (terminated by ! or end). -/
+def methodInClass : Parser Unit Method := do
+  ws
+  let (selector, params) ← methodHeader
+  let temps ← methodTemps
+  let pragmas ← many (attempt pragma)
+  let body ← seqStatementsUntil (symbol "!" <|> symbol "end")
+  ws
+  pure { selector := selector, params := params, temps := temps, pragmas := pragmas.toList, body := body }
+
+/-- Parse zero or more class methods until end. -/
+partial def classMethods : Parser Unit (List Method) := do
+  let endAhead ← opt (attempt (lookAhead (symbol "end")))
+  match endAhead with
+  | some _ => pure []
+  | none =>
+      let m ← methodInClass
+      let _ ← opt (attempt (symbol "!"))
+      let rest ← classMethods
+      pure (m :: rest)
+
+/-- Parse a class definition. -/
+def classDef : Parser Unit ClassDef := do
+  ws
+  symbol "class"
+  let name ← ident
+  let super ← opt (attempt do
+    symbol "<"
+    ident)
+  let ivars ← classIvars
+  let methods ← classMethods
+  symbol "end"
+  pure { name := name, super := super, ivars := ivars, methods := methods }
+
+/-- Parse Smalltalk source into a program (class definitions + expressions). -/
 def programParser : Parser Unit Program := do
   ws
+  let classes ← many (attempt classDef)
   let exprs ← seqStatements
   ws
   eof
-  pure { classes := [], main := exprs }
+  pure { classes := classes.toList, main := exprs }
 
 /-- Parse Smalltalk source into a program. -/
 def parse (input : String) : Except ParseError Program :=

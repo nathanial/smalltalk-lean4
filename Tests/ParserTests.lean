@@ -16,10 +16,20 @@ def parseMain (src : String) : IO (List Expr) := do
   | .ok program => pure program.main
   | .error e => throw (IO.userError s!"parse error: {e.message}")
 
+def parseProgram (src : String) : IO Program := do
+  match Smalltalk.parse src with
+  | .ok program => pure program
+  | .error e => throw (IO.userError s!"parse error: {e.message}")
+
 def parseOne (src : String) : IO Expr := do
   match Smalltalk.parseExpr src with
   | .ok expr => pure expr
   | .error e => throw (IO.userError s!"parse error: {e.message}")
+
+def parseError (src : String) : IO String := do
+  match Smalltalk.parse src with
+  | .ok _ => throw (IO.userError "expected parse error")
+  | .error e => pure e.message
 
 test "parse int literal" := do
   let exprs ← parseMain "42"
@@ -177,6 +187,24 @@ test "parse comments" := do
 test "parse expression entrypoint" := do
   let expr ← parseOne "1 + 2"
   expr ≡ Expr.send (Expr.lit (.int 1)) "+" [Expr.lit (.int 2)]
+
+test "parse class definition" := do
+  let program ← parseProgram "class Point < Object | x y | x ^ x ! end"
+  program.classes.length ≡ 1
+  let cls := program.classes.head!
+  cls.name ≡ "Point"
+  cls.super ≡ some "Object"
+  cls.ivars ≡ ["x", "y"]
+  cls.methods.length ≡ 1
+  cls.methods.head!.selector ≡ "x"
+
+test "parse class then main expressions" := do
+  let program ← parseProgram "class Foo end 1 + 2"
+  program.main ≡ [Expr.send (Expr.lit (.int 1)) "+" [Expr.lit (.int 2)]]
+
+test "disallow ! as binary selector in expressions" := do
+  let msg ← parseError "1 ! 2"
+  shouldSatisfy (msg.startsWith "Parse error") "expected parse error"
 
 
 

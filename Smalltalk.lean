@@ -7,6 +7,7 @@ import Smalltalk.Parse
 import Smalltalk.Primitives
 import Smalltalk.Eval
 import Smalltalk.Image
+import Smalltalk.Stdlib
 
 namespace Smalltalk
 
